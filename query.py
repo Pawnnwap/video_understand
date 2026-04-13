@@ -1,5 +1,4 @@
-"""
-query.py — standalone query interface
+"""query.py — standalone query interface
 Load an existing video database and query it interactively
 without rerunning the pipeline.
 
@@ -11,22 +10,25 @@ Usage:
 """
 
 from __future__ import annotations
-# Block all HuggingFace network calls — everything must run fully locally.
-import os
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_DATASETS_OFFLINE"] = "1"
 
 import argparse
 import importlib
 import importlib.util
 import logging
+
+# Block all HuggingFace network calls — everything must run fully locally.
+import os
 import sys
 from pathlib import Path
 
 import config as cfg
 from core.database import VideoDatabase
 from openai import OpenAI
+
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_DATASETS_OFFLINE"] = "1"
+
 
 # query.py shadows the query/ package — load query_engine directly by path
 _qe_path = Path(__file__).parent / "query" / "query_engine.py"
@@ -42,15 +44,15 @@ logging.basicConfig(level=logging.WARNING)   # quiet for interactive use
 
 def main():
     parser = argparse.ArgumentParser(description="Query a processed video database")
-    parser.add_argument("db_dir",       help="Path to the video database directory")
-    parser.add_argument("--ask",        help="Ask a single question and exit")
-    parser.add_argument("--summary",    action="store_true", help="Print video summary")
-    parser.add_argument("--outline",    action="store_true", help="Print topic outline")
-    parser.add_argument("--slides",     action="store_true", help="List all slide changes")
+    parser.add_argument("db_dir", help="Path to the video database directory")
+    parser.add_argument("--ask", help="Ask a single question and exit")
+    parser.add_argument("--summary", action="store_true", help="Print video summary")
+    parser.add_argument("--outline", action="store_true", help="Print topic outline")
+    parser.add_argument("--slides", action="store_true", help="List all slide changes")
     parser.add_argument("--transcript", action="store_true", help="Print full transcript")
-    parser.add_argument("--knowledge",  help="Deep knowledge extraction on a topic")
-    parser.add_argument("--at",         help="Query at timestamp MM:SS", metavar="MM:SS")
-    parser.add_argument("--question",   help="Question for --at (optional)", default="What is happening here?")
+    parser.add_argument("--knowledge", help="Deep knowledge extraction on a topic")
+    parser.add_argument("--at", help="Query at timestamp MM:SS", metavar="MM:SS")
+    parser.add_argument("--question", help="Question for --at (optional)", default="What is happening here?")
     args = parser.parse_args()
 
     # Load DB

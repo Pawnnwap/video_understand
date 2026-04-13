@@ -1,5 +1,4 @@
-"""
-ocr_worker.py — standalone OCR subprocess
+"""ocr_worker.py — standalone OCR subprocess
 Called by vlm_analyser.run_ocr() to avoid PyTorch/PaddlePaddle CUDA conflict.
 
 Usage (internal):
@@ -20,21 +19,22 @@ def main():
         print(json.dumps({"lines": [], "error": "usage: ocr_worker.py <path> <lang> <conf>"}))
         sys.exit(1)
 
-    frame_path  = sys.argv[1]
-    lang        = sys.argv[2]
-    min_conf    = float(sys.argv[3])
+    frame_path = sys.argv[1]
+    lang = sys.argv[2]
+    min_conf = float(sys.argv[3])
 
     try:
         from paddleocr import PaddleOCR
+
         # Try each kwargs variant; stop at the first that succeeds
         ocr = None
         for kwargs in ({"use_gpu": True}, {"use_gpu": False}, {}):
             try:
                 ocr = PaddleOCR(
-                    use_angle_cls         = True,
-                    lang                  = lang,
-                    show_log              = False,
-                    text_rec_score_thresh = min_conf,
+                    use_angle_cls=True,
+                    lang=lang,
+                    show_log=False,
+                    text_rec_score_thresh=min_conf,
                     **kwargs,
                 )
                 break

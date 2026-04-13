@@ -1,5 +1,4 @@
-"""
-downloader.py — video acquisition module
+"""downloader.py — video acquisition module
 Accepts a local file path, a short video code, or a full URL.
 Returns a local Path ready for the pipeline.
 
@@ -15,27 +14,26 @@ Backend: yt-dlp
 """
 
 from __future__ import annotations
+
 import logging
 import re
 from pathlib import Path
-from typing import Optional
 
 log = logging.getLogger(__name__)
 
 # ── Short-code patterns ───────────────────────────────────────────────────────
 # YouTube video IDs are exactly 11 URL-safe characters
-_YT_ID_RE = re.compile(r'^[A-Za-z0-9_-]{11}$')
+_YT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 # Bilibili BV codes
-_BV_RE_SHORT = re.compile(r'^BV[A-Za-z0-9]{10}$', re.I)
+_BV_RE_SHORT = re.compile(r"^BV[A-Za-z0-9]{10}$", re.IGNORECASE)
 
 # ── Full-URL patterns ─────────────────────────────────────────────────────────
-_YT_URL_RE = re.compile(r"(youtube\.com/watch|youtu\.be/|youtube\.com/shorts)", re.I)
-_BV_URL_RE = re.compile(r"(bilibili\.com/video|b23\.tv/)", re.I)
+_YT_URL_RE = re.compile(r"(youtube\.com/watch|youtu\.be/|youtube\.com/shorts)", re.IGNORECASE)
+_BV_URL_RE = re.compile(r"(bilibili\.com/video|b23\.tv/)", re.IGNORECASE)
 
 
-def _expand_short_code(source: str) -> Optional[str]:
-    """
-    If source looks like a YouTube ID or Bilibili BV code, return the
+def _expand_short_code(source: str) -> str | None:
+    """If source looks like a YouTube ID or Bilibili BV code, return the
     canonical URL.  Returns None if source is not a recognised short code.
 
     Heuristic: local files always have a file extension (e.g. '.mp4').
@@ -55,8 +53,10 @@ def _expand_short_code(source: str) -> Optional[str]:
 def is_url(source: str) -> bool:
     return source.startswith("http://") or source.startswith("https://")
 
+
 def is_youtube(url: str) -> bool:
     return bool(_YT_URL_RE.search(url))
+
 
 def is_bilibili(url: str) -> bool:
     return bool(_BV_URL_RE.search(url))
@@ -65,8 +65,7 @@ def is_bilibili(url: str) -> bool:
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def resolve_source(source: str, download_dir: str = "./downloads", max_duration_sec: int = 0) -> Path:
-    """
-    Given a local path, short video code, or full URL, return a local Path.
+    """Given a local path, short video code, or full URL, return a local Path.
     Downloads if necessary. Raises ValueError for unsupported inputs.
     """
     # Expand short codes before anything else
@@ -84,7 +83,7 @@ def resolve_source(source: str, download_dir: str = "./downloads", max_duration_
 
     if not (is_youtube(source) or is_bilibili(source)):
         raise ValueError(
-            f"Unsupported URL. Only YouTube and Bilibili are supported.\nGot: {source}"
+            f"Unsupported URL. Only YouTube and Bilibili are supported.\nGot: {source}",
         )
 
     return _download(source, Path(download_dir), max_duration_sec=max_duration_sec)
@@ -101,8 +100,7 @@ def get_video_info(url: str) -> dict:
 
 
 def _download(url: str, out_dir: Path, max_duration_sec: int = 0) -> Path:
-    """
-    Download video with yt-dlp. Picks best quality ≤720p as mp4.
+    """Download video with yt-dlp. Picks best quality ≤720p as mp4.
     max_duration_sec: if > 0, refuse videos longer than this (0 = no limit).
     Returns path to downloaded file.
     """
@@ -118,11 +116,11 @@ def _download(url: str, out_dir: Path, max_duration_sec: int = 0) -> Path:
             dur = info.get("duration", 0) or 0
             if dur > max_duration_sec:
                 raise ValueError(
-                    f"Video is {dur//60}m{dur%60}s — exceeds limit of "
-                    f"{max_duration_sec//60}m{max_duration_sec%60}s. "
-                    "Pass max_duration_sec=0 to disable this check."
+                    f"Video is {dur // 60}m{dur % 60}s — exceeds limit of "
+                    f"{max_duration_sec // 60}m{max_duration_sec % 60}s. "
+                    "Pass max_duration_sec=0 to disable this check.",
                 )
-            log.info(f"Duration OK: {dur//60}m{dur%60}s")
+            log.info(f"Duration OK: {dur // 60}m{dur % 60}s")
         except ValueError:
             raise
         except Exception as e:
@@ -142,37 +140,32 @@ def _download(url: str, out_dir: Path, max_duration_sec: int = 0) -> Path:
             "/best[height<=720]"
             "/best"
         ),
-        "outtmpl":             outtmpl,
+        "outtmpl": outtmpl,
         "merge_output_format": "mp4",
-        "noplaylist":          True,
-        "quiet":               False,
-        "no_warnings":         False,
-        "progress_hooks":      [_progress_hook],
+        "noplaylist": True,
+        "quiet": False,
+        "no_warnings": False,
+        "progress_hooks": [_progress_hook],
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
-            "Referer": "https://www.bilibili.com/",
+            'Referer': 'https://www.bilibili.com/',
         },
-        # Use browser cookies — helps with Bilibili login-gated / region content.
-        # Tries Edge first, then Chrome; silently skips if neither is available.
-        "cookiesfrombrowser": ("edge", None, None, None),
-        # Retries
-        "retries":             5,
-        "fragment_retries":    5,
-        "socket_timeout":      30,
+        'retries': 5,
+        'fragment_retries': 5,
+        'socket_timeout': 30,
     }
 
     log.info(f"Downloading: {url}")
 
-    # Try with browser cookies first; fall back to no cookies on DPAPI/decrypt errors.
-    attempts = [ydl_opts, {**ydl_opts, "cookiesfrombrowser": None}]
+    attempts = [ydl_opts]
     last_err = None
 
     for attempt_opts in attempts:
-        downloaded_path: Optional[Path] = None
+        downloaded_path: Path | None = None
 
         class _PathCapture(yt_dlp.YoutubeDL):
             def process_info(self, info_dict):
@@ -212,9 +205,9 @@ def _download(url: str, out_dir: Path, max_duration_sec: int = 0) -> Path:
 
 def _progress_hook(d: dict):
     if d["status"] == "downloading":
-        pct  = d.get("_percent_str", "?%").strip()
-        spd  = d.get("_speed_str",   "?/s").strip()
-        eta  = d.get("_eta_str",     "?s").strip()
+        pct = d.get("_percent_str", "?%").strip()
+        spd = d.get("_speed_str", "?/s").strip()
+        eta = d.get("_eta_str", "?s").strip()
         log.info(f"  Downloading {pct}  speed={spd}  eta={eta}")
     elif d["status"] == "finished":
         log.info(f"  Download finished: {d.get('filename', '')}")

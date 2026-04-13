@@ -1,12 +1,11 @@
-"""
-utils/retry.py
+"""utils/retry.py
 Shared retry logic and frame compression utilities used across all stages.
 
 Retry strategy:
   - Exponential backoff with jitter
   - Separate budgets for transient errors vs hard failures
   - Every retryable call logs attempt number and wait time
-  - Async and sync variants so both pipeline phases can use them
+  - Sync variants for pipeline phases
 
 Frame compression:
   - Caps image dimensions before encoding to base64
@@ -15,14 +14,15 @@ Frame compression:
 """
 
 from __future__ import annotations
-import asyncio
+
 import functools
 import io
 import logging
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Tuple, TypeVar
+from typing import TypeVar
 
 log = logging.getLogger(__name__)
 
@@ -32,15 +32,17 @@ T = TypeVar("T")
 #  Retry configuration
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class RetryConfig:
     """Centralised retry knobs — override per call site if needed."""
-    max_attempts:   int   = 4
-    base_delay_s:   float = 2.0      # first back-off wait
-    max_delay_s:    float = 30.0     # ceiling on any single wait
-    jitter_factor:  float = 0.25     # ± fraction of computed delay
+
+    max_attempts: int = 4
+    base_delay_s: float = 2.0      # first back-off wait
+    max_delay_s: float = 30.0     # ceiling on any single wait
+    jitter_factor: float = 0.25     # ± fraction of computed delay
     # Exceptions that warrant a retry (everything else is re-raised immediately)
-    retryable: Tuple = field(default_factory=lambda: (
+    retryable: tuple = field(default_factory=lambda: (
         ConnectionError,
         TimeoutError,
         OSError,
@@ -62,13 +64,12 @@ def _wait_time(attempt: int, cfg: RetryConfig) -> float:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def with_retry(
-    func:       Optional[Callable] = None,
+    func: Callable | None = None,
     *,
-    cfg:        RetryConfig = DEFAULT_RETRY,
-    label:      str = "",
+    cfg: RetryConfig = DEFAULT_RETRY,
+    label: str = "",
 ):
-    """
-    Decorator for synchronous functions.
+    """Decorator for synchronous functions.
 
     Usage:
         @with_retry
@@ -94,8 +95,8 @@ def with_retry(
                         raise
                     wait = _wait_time(attempt, cfg)
                     log.warning(
-                        f"[{name}] Attempt {attempt+1}/{cfg.max_attempts} failed: "
-                        f"{type(exc).__name__}: {exc}  — retrying in {wait:.1f}s"
+                        f"[{name}] Attempt {attempt + 1}/{cfg.max_attempts} failed: "
+                        f"{type(exc).__name__}: {exc}  — retrying in {wait:.1f}s",
                     )
                     time.sleep(wait)
             log.error(f"[{name}] All {cfg.max_attempts} attempts exhausted.")
@@ -109,79 +110,8 @@ def with_retry(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Async retry decorator
-# ─────────────────────────────────────────────────────────────────────────────
-
-def async_with_retry(
-    func:  Optional[Callable] = None,
-    *,
-    cfg:   RetryConfig = DEFAULT_RETRY,
-    label: str = "",
-):
-    """
-    Decorator for async functions.
-
-    Usage:
-        @async_with_retry
-        async def call_vlm_async(...): ...
-    """
-    def decorator(fn: Callable) -> Callable:
-        name = label or fn.__qualname__
-
-        @functools.wraps(fn)
-        async def wrapper(*args, **kwargs):
-            last_exc = None
-            for attempt in range(cfg.max_attempts):
-                try:
-                    return await fn(*args, **kwargs)
-                except Exception as exc:
-                    last_exc = exc
-                    if not _is_retryable(exc, cfg):
-                        log.error(f"[{name}] Non-retryable error: {exc}")
-                        raise
-                    wait = _wait_time(attempt, cfg)
-                    log.warning(
-                        f"[{name}] Attempt {attempt+1}/{cfg.max_attempts} failed: "
-                        f"{type(exc).__name__}: {exc}  — retrying in {wait:.1f}s"
-                    )
-                    await asyncio.sleep(wait)
-            log.error(f"[{name}] All {cfg.max_attempts} attempts exhausted.")
-            raise last_exc  # type: ignore[misc]
-
-        return wrapper
-
-    if func is not None:
-        return decorator(func)
-    return decorator
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 #  Retry helper for inline use (no decorator needed)
 # ─────────────────────────────────────────────────────────────────────────────
-
-async def retry_async(coro_fn: Callable, *args, cfg: RetryConfig = DEFAULT_RETRY, label="", **kwargs):
-    """
-    Inline async retry without decorator.
-
-    Example:
-        result = await retry_async(call_vlm, prompt, image, label="scene_desc")
-    """
-    last_exc = None
-    name = label or getattr(coro_fn, "__qualname__", str(coro_fn))
-    for attempt in range(cfg.max_attempts):
-        try:
-            return await coro_fn(*args, **kwargs)
-        except Exception as exc:
-            last_exc = exc
-            if not _is_retryable(exc, cfg):
-                raise
-            wait = _wait_time(attempt, cfg)
-            log.warning(
-                f"[{name}] Attempt {attempt+1}/{cfg.max_attempts}: "
-                f"{type(exc).__name__} — retry in {wait:.1f}s"
-            )
-            await asyncio.sleep(wait)
-    raise last_exc  # type: ignore[misc]
 
 
 def retry_sync(fn: Callable, *args, cfg: RetryConfig = DEFAULT_RETRY, label="", **kwargs):
@@ -197,8 +127,8 @@ def retry_sync(fn: Callable, *args, cfg: RetryConfig = DEFAULT_RETRY, label="", 
                 raise
             wait = _wait_time(attempt, cfg)
             log.warning(
-                f"[{name}] Attempt {attempt+1}/{cfg.max_attempts}: "
-                f"{type(exc).__name__} — retry in {wait:.1f}s"
+                f"[{name}] Attempt {attempt + 1}/{cfg.max_attempts}: "
+                f"{type(exc).__name__} — retry in {wait:.1f}s",
             )
             time.sleep(wait)
     raise last_exc  # type: ignore[misc]
@@ -209,8 +139,7 @@ def retry_sync(fn: Callable, *args, cfg: RetryConfig = DEFAULT_RETRY, label="", 
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _is_retryable(exc: Exception, cfg: RetryConfig) -> bool:
-    """
-    Returns True if the exception is worth retrying.
+    """Returns True if the exception is worth retrying.
     Handles:
       - Standard Python exceptions (ConnectionError, TimeoutError, OSError)
       - OpenAI SDK errors (APIConnectionError, RateLimitError, APIStatusError 5xx)
@@ -220,7 +149,7 @@ def _is_retryable(exc: Exception, cfg: RetryConfig) -> bool:
         return True
 
     exc_type = type(exc).__name__
-    exc_msg  = str(exc).lower()
+    exc_msg = str(exc).lower()
 
     # OpenAI SDK error class names
     retryable_names = {
@@ -263,14 +192,16 @@ def _is_retryable(exc: Exception, cfg: RetryConfig) -> bool:
 #  Fallback: if WebP is unavailable (Pillow built without libwebp), fall back
 #  to optimised progressive JPEG at the same quality setting.
 
-_WEBP_SUPPORTED: Optional[bool] = None   # lazily detected
+_WEBP_SUPPORTED: bool | None = None   # lazily detected
+
 
 def _webp_available() -> bool:
     global _WEBP_SUPPORTED
     if _WEBP_SUPPORTED is None:
         try:
-            from PIL import Image
             import io as _io
+
+            from PIL import Image
             _buf = _io.BytesIO()
             Image.new("RGB", (4, 4)).save(_buf, format="WEBP")
             _WEBP_SUPPORTED = True
@@ -279,9 +210,8 @@ def _webp_available() -> bool:
     return _WEBP_SUPPORTED
 
 
-def compress_frame_safe(image_path, cfg=None) -> Tuple[bytes, int, int]:
-    """
-    Compress a video frame for VLM ingestion.
+def compress_frame_safe(image_path, cfg=None) -> tuple[bytes, int, int]:
+    """Compress a video frame for VLM ingestion.
 
     Uses WebP at `quality` (default 85) for best perceptual quality per byte.
     Falls back to progressive JPEG if libwebp is unavailable.
@@ -292,52 +222,35 @@ def compress_frame_safe(image_path, cfg=None) -> Tuple[bytes, int, int]:
     from PIL import Image
 
     max_dim = getattr(cfg, "FRAME_MAX_DIM", 1280) if cfg else 1280
-    quality = getattr(cfg, "FRAME_QUALITY",  85)  if cfg else 85
+    quality = getattr(cfg, "FRAME_QUALITY", 85) if cfg else 85
 
     img = Image.open(image_path).convert("RGB")
     w, h = img.size
 
     if max(w, h) > max_dim:
-        scale  = max_dim / max(w, h)
-        img    = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-        w, h   = img.size
+        scale = max_dim / max(w, h)
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        w, h = img.size
 
     buf = io.BytesIO()
     if _webp_available():
         # method=4 balances encode speed vs compression ratio
         img.save(buf, format="WEBP", quality=quality, method=4)
-        mime = "image/webp"
     else:
         img.save(buf, format="JPEG", quality=quality,
                  optimize=True, progressive=True)
-        mime = "image/jpeg"
 
     raw = buf.getvalue()
     log.debug(
         f"Frame compressed → {w}×{h}  fmt={'webp' if _webp_available() else 'jpeg'}"
-        f"  q={quality}  size={len(raw)//1024}KB"
-        f"  src={getattr(image_path, 'name', str(image_path))}"
+        f"  q={quality}  size={len(raw) // 1024}KB"
+        f"  src={getattr(image_path, 'name', str(image_path))}",
     )
     return raw, w, h
 
 
-# Legacy alias kept for any direct callers
-def compress_frame(image_path, max_dim: int = 1280, quality: int = 85) -> bytes:
-    """Resize + encode as JPEG (legacy helper, prefer compress_frame_safe)."""
-    from PIL import Image
-    img = Image.open(image_path).convert("RGB")
-    w, h = img.size
-    if max(w, h) > max_dim:
-        scale = max_dim / max(w, h)
-        img   = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=quality, optimize=True)
-    return buf.getvalue()
-
-
-def compress_frame_for_vlm(image_path, cfg=None) -> Tuple[str, str, int, int]:
-    """
-    Compress a frame and return everything the VLM call needs:
+def compress_frame_for_vlm(image_path, cfg=None) -> tuple[str, str, int, int]:
+    """Compress a frame and return everything the VLM call needs:
       (base64_string, mime_type, width, height)
 
     Always produces JPEG — LM Studio and most local VLMs only accept JPEG/PNG
@@ -345,37 +258,28 @@ def compress_frame_for_vlm(image_path, cfg=None) -> Tuple[str, str, int, int]:
     is not suitable here.
     """
     import base64
+
     from PIL import Image
 
     max_dim = getattr(cfg, "FRAME_MAX_DIM", 1280) if cfg else 1280
-    quality = getattr(cfg, "FRAME_QUALITY",  85)  if cfg else 85
+    quality = getattr(cfg, "FRAME_QUALITY", 85) if cfg else 85
 
     img = Image.open(image_path).convert("RGB")
     w, h = img.size
     if max(w, h) > max_dim:
         scale = max_dim / max(w, h)
-        img   = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-        w, h  = img.size
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        w, h = img.size
 
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=quality, optimize=True, progressive=True)
-    raw  = buf.getvalue()
-    b64  = base64.b64encode(raw).decode()
+    raw = buf.getvalue()
+    b64 = base64.b64encode(raw).decode()
     log.debug(
-        f"VLM frame → {w}×{h}  fmt=jpeg  q={quality}  size={len(raw)//1024}KB"
-        f"  src={getattr(image_path, 'name', str(image_path))}"
+        f"VLM frame → {w}×{h}  fmt=jpeg  q={quality}  size={len(raw) // 1024}KB"
+        f"  src={getattr(image_path, 'name', str(image_path))}",
     )
     return b64, "image/jpeg", w, h
-
-
-def frame_to_b64(image_path, cfg=None) -> str:
-    """
-    Legacy entry point: compress and return base64 string only.
-    Callers that need the mime type should use compress_frame_for_vlm().
-    """
-    import base64
-    raw, w, h = compress_frame_safe(image_path, cfg)
-    return base64.b64encode(raw).decode()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -397,13 +301,11 @@ def frame_to_b64(image_path, cfg=None) -> str:
 #    < 0.80  → clearly different    (slide change, scene cut)
 #
 #  Recommended threshold for "skip OCR/VLM":  0.90  (configurable)
-
 _SIM_THUMB_SIZE = 16   # px — fast and still discriminative
 
 
 def compute_frame_similarity(path_a, path_b, thumb_size: int = _SIM_THUMB_SIZE) -> float:
-    """
-    Return perceptual similarity between two frame images in [0.0, 1.0].
+    """Return perceptual similarity between two frame images in [0.0, 1.0].
     1.0 = pixel-perfect identical, 0.0 = maximally different.
 
     Fast: loads two tiny thumbnails, no GPU needed.
@@ -418,8 +320,8 @@ def compute_frame_similarity(path_a, path_b, thumb_size: int = _SIM_THUMB_SIZE) 
         )
 
     try:
-        a, b  = _thumb(path_a), _thumb(path_b)
-        mse   = float(np.mean((a - b) ** 2))
+        a, b = _thumb(path_a), _thumb(path_b)
+        mse = float(np.mean((a - b) ** 2))
         return max(0.0, 1.0 - mse / (255.0 ** 2))
     except Exception as e:
         log.warning(f"Frame similarity check failed ({e}) — treating as different")

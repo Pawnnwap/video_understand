@@ -1,5 +1,4 @@
-"""
-cli.py -- workspace shell for the Video Understanding System
+"""cli.py -- workspace shell for the Video Understanding System
 
 Usage:
     python cli.py                    # enter workspace, pick a project
@@ -33,8 +32,15 @@ Project commands (once inside a project):
 """
 
 from __future__ import annotations
+
 import io
+import argparse
 import sys
+
+import config as cfg
+from core.database import VideoDatabase
+from downloader import _expand_short_code, is_url
+from openai import OpenAI
 
 # Force UTF-8 on Windows consoles so CJK / box-drawing chars render correctly
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
@@ -48,11 +54,10 @@ import os
 import subprocess
 from pathlib import Path
 
-os.environ["HF_HUB_OFFLINE"]       = "1"
-os.environ["TRANSFORMERS_OFFLINE"]  = "1"
-os.environ["HF_DATASETS_OFFLINE"]   = "1"
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_DATASETS_OFFLINE"] = "1"
 
-import config as cfg
 
 logging.basicConfig(level=logging.WARNING)   # quiet in interactive mode
 
@@ -65,10 +70,6 @@ _spec.loader.exec_module(_qe_mod)
 QueryEngine = _qe_mod.QueryEngine
 _parse_timestamp = _qe_mod._parse_timestamp
 
-from core.database import VideoDatabase
-from openai import OpenAI
-from downloader import is_url, _expand_short_code
-
 
 def _is_video_source(s: str) -> bool:
     """Return True if s looks like something the pipeline can process."""
@@ -79,9 +80,11 @@ def _is_video_source(s: str) -> bool:
 #  Helpers
 # ---------------------------------------------------------------------------
 
-def _build_client():
-    return OpenAI(base_url=cfg.LM_STUDIO_BASE_URL, api_key=cfg.LM_STUDIO_API_KEY)
-
+def _build_client(base_url=None, api_key=None):
+    return OpenAI(
+        base_url=base_url or cfg.LM_STUDIO_BASE_URL,
+        api_key=api_key or cfg.LM_STUDIO_API_KEY,
+    )
 
 def _list_projects(db_root: Path) -> list:
     """Return processed project dirs, newest first."""
@@ -159,13 +162,20 @@ def _load_project(db_path: Path):
     return db, engine
 
 
-def _run_pipeline(source: str) -> bool:
+def _run_pipeline(source: str, base_url=None, api_key=None, vlm_model=None, llm_model=None) -> bool:
     """Run pipeline.py on source, inheriting stdio for live output."""
     print(f"\n  Launching pipeline for: {source}")
-    print("  (runs in the foreground -- please wait)\n")
-    r = subprocess.run(
-        [sys.executable, str(Path(__file__).parent / "pipeline.py"), source]
-    )
+    print('  (runs in the foreground -- please wait)\n')
+    cmd = [sys.executable, str(Path(__file__).parent / 'pipeline.py'), source]
+    if base_url:
+        cmd.extend(['--base-url', base_url])
+    if api_key:
+        cmd.extend(['--api-key', api_key])
+    if vlm_model:
+        cmd.extend(['--vlm-model', vlm_model])
+    if llm_model:
+        cmd.extend(['--llm-model', llm_model])
+    r = subprocess.run(cmd)
     return r.returncode == 0
 
 
@@ -190,8 +200,7 @@ _HELP_PROJECT = """
 
 
 def _project_repl(db_path: Path, db_root: Path) -> bool:
-    """
-    Inner REPL for one project.
+    """Inner REPL for one project.
     Returns True  -> caller should return to workspace.
     Returns False -> caller should exit entirely.
     """
@@ -221,17 +230,17 @@ def _project_repl(db_path: Path, db_root: Path) -> bool:
             continue
 
         parts = raw.split(None, 1)
-        cmd   = parts[0].lower()
-        rest  = parts[1].strip() if len(parts) > 1 else ""
+        cmd = parts[0].lower()
+        rest = parts[1].strip() if len(parts) > 1 else ""
 
         # -- navigation --
         if cmd in ("/quit", "/exit", "quit", "exit"):
             return False
 
-        elif cmd in ("/back", "/workspace", "back"):
+        if cmd in ("/back", "/workspace", "back"):
             return True
 
-        elif cmd == "/help":
+        if cmd == "/help":
             print(_HELP_PROJECT)
 
         elif cmd == "/open":
@@ -342,14 +351,14 @@ def _workspace_repl(db_root: Path, open_immediately=None):
             continue
 
         parts = raw.split(None, 1)
-        cmd   = parts[0].lower()
-        rest  = parts[1].strip() if len(parts) > 1 else ""
+        cmd = parts[0].lower()
+        rest = parts[1].strip() if len(parts) > 1 else ""
 
         if cmd in ("quit", "exit", "/quit", "/exit"):
             print("Bye.")
             return
 
-        elif cmd in ("help", "/help"):
+        if cmd in ("help", "/help"):
             print(_HELP_WORKSPACE)
 
         elif cmd in ("list", "ls", "/list", "/ls"):
@@ -404,7 +413,7 @@ def _workspace_repl(db_root: Path, open_immediately=None):
                 else:
                     print("\n  Pipeline exited with errors.\n")
             else:
-                print(f"  Unknown command. Type 'help', a project name/#, or a BV/YouTube code.")
+                print("  Unknown command. Type 'help', a project name/#, or a BV/YouTube code.")
 
 
 # ---------------------------------------------------------------------------
@@ -412,26 +421,41 @@ def _workspace_repl(db_root: Path, open_immediately=None):
 # ---------------------------------------------------------------------------
 
 def main():
+    parser = argparse.ArgumentParser(description='Video Understanding CLI')
+    parser.add_argument('source', nargs='?', help='Video path, URL, or BV code')
+    parser.add_argument('--base-url', help='LM Studio base URL')
+    parser.add_argument('--api-key', help='API key')
+    parser.add_argument('--vlm-model', help='Vision model name')
+    parser.add_argument('--llm-model', help='Language model name')
+    args = parser.parse_args()
+
+    if args.base_url:
+        cfg.LM_STUDIO_BASE_URL = args.base_url
+    if args.api_key:
+        cfg.LM_STUDIO_API_KEY = args.api_key
+    if args.vlm_model:
+        cfg.VLM_MODEL = args.vlm_model
+    if args.llm_model:
+        cfg.LLM_MODEL = args.llm_model
+
+
     db_root = Path(cfg.DB_DIR)
 
-    if len(sys.argv) > 1:
-        arg = sys.argv[1]
+    if args.source:
+        arg = args.source
         arg_path = Path(arg)
 
-        # Already a processed db directory?
-        if arg_path.is_dir() and (arg_path / "transcript.json").exists():
+        if arg_path.is_dir() and (arg_path / 'transcript.json').exists():
             _workspace_repl(db_root, open_immediately=arg_path)
             return
 
-        # Project name inside db_root?
         candidate = db_root / arg
-        if candidate.is_dir() and (candidate / "transcript.json").exists():
+        if candidate.is_dir() and (candidate / 'transcript.json').exists():
             _workspace_repl(db_root, open_immediately=candidate)
             return
 
-        # Treat as source to process first, then open
         print(f"\n  '{arg}' not found as an existing project -- running pipeline first...")
-        ok = _run_pipeline(arg)
+        ok = _run_pipeline(arg, args.base_url, args.api_key, args.vlm_model, args.llm_model)
         if ok:
             projects = _list_projects(db_root)
             if projects:
@@ -442,5 +466,5 @@ def main():
         _workspace_repl(db_root)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

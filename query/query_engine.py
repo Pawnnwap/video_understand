@@ -1,13 +1,11 @@
-"""
-query/query_engine.py
+"""query/query_engine.py
 Uses the VideoDatabase + local LLM to answer natural language questions
 about the video. All queries go through RAG over the vector store.
 """
 
 from __future__ import annotations
-import json
+
 import logging
-from typing import List, Dict, Optional
 
 from utils.retry import RetryConfig, retry_sync
 
@@ -26,23 +24,21 @@ SYSTEM_PROMPT = """\
 
 
 class QueryEngine:
-    """
-    Wraps a VideoDatabase and a local LLM client to answer
+    """Wraps a VideoDatabase and a local LLM client to answer
     natural language questions about a processed video.
     """
 
     def __init__(self, db, client, cfg):
-        self.db     = db
+        self.db = db
         self.client = client
-        self.cfg    = cfg
+        self.cfg = cfg
 
     # ──────────────────────────────────────────────────────────────────────
     #  High-level query methods
     # ──────────────────────────────────────────────────────────────────────
 
     def ask(self, question: str, n_context: int = 6) -> str:
-        """
-        General-purpose RAG query.
+        """General-purpose RAG query.
         Retrieves the most relevant segments and asks the LLM.
         """
         hits = self.db.search(question, n_results=n_context)
@@ -51,22 +47,21 @@ class QueryEngine:
         return self._llm(prompt)
 
     def summarize(self, style: str = "comprehensive") -> str:
-        """
-        Generate a full video summary.
+        """Generate a full video summary.
         style: "brief" | "comprehensive" | "bullet"
         """
         all_segs = self.db.get_all_segments()
         # Sample evenly to fit context window
-        sampled  = _sample_segments(all_segs, max_tokens_budget=6000)
-        context  = "\n\n".join(
+        sampled = _sample_segments(all_segs, max_tokens_budget=6000)
+        context = "\n\n".join(
             f"[{s['start_ts']}] {s['fused_summary']}" for s in sampled
         )
 
         style_instructions = {
-            "headline":      "请用一句话（不超过30个字）概括这个视频最核心的内容。",
-            "brief":         "请用3-5句话写一个简洁的概述。",
+            "headline": "请用一句话（不超过30个字）概括这个视频最核心的内容。",
+            "brief": "请用3-5句话写一个简洁的概述。",
             "comprehensive": "请写一个结构化摘要，涵盖主要话题、关键要点和结论，使用章节标题组织内容。",
-            "bullet":        "请用要点列表形式总结所有关键话题和核心要点。",
+            "bullet": "请用要点列表形式总结所有关键话题和核心要点。",
         }
         instruction = style_instructions.get(style, style_instructions["comprehensive"])
 
@@ -95,12 +90,11 @@ class QueryEngine:
         if not seg:
             return f"No segment found at {timestamp_ms}ms."
         context = _format_single_segment(seg)
-        prompt  = f"{context}\n\n关于这个时刻的问题：{question}"
+        prompt = f"{context}\n\n关于这个时刻的问题：{question}"
         return self._llm(prompt)
 
     def extract_knowledge(self, topic: str) -> str:
-        """
-        Deep extraction: retrieve all segments mentioning a topic,
+        """Deep extraction: retrieve all segments mentioning a topic,
         then ask the LLM to synthesize the complete knowledge.
         """
         hits = self.db.search(topic, n_results=10)
@@ -114,15 +108,15 @@ class QueryEngine:
         )
         return self._llm(prompt, max_tokens=1200)
 
-    def find_slides_about(self, topic: str) -> List[Dict]:
+    def find_slides_about(self, topic: str) -> list[dict]:
         """Return all slide change points related to a topic."""
         hits = self.db.search(topic, n_results=8)
         return [
             {
-                "timestamp":    h["timestamp"],
-                "slide_title":  h["slide_title"],
-                "summary":      h["fused_summary"],
-                "frame_path":   h["frame_path"],
+                "timestamp": h["timestamp"],
+                "slide_title": h["slide_title"],
+                "summary": h["fused_summary"],
+                "frame_path": h["frame_path"],
             }
             for h in hits
             if h.get("slide_title")
@@ -136,8 +130,7 @@ class QueryEngine:
     # ──────────────────────────────────────────────────────────────────────
 
     def repl(self):
-        """
-        Launch an interactive query session in the terminal.
+        """Launch an interactive query session in the terminal.
         Special commands:
           /summary          — comprehensive summary
           /outline          — topic outline
@@ -147,11 +140,11 @@ class QueryEngine:
           /knowledge <topic>— deep extraction on a topic
           /quit             — exit
         """
-        print("\n" + "═"*60)
+        print("\n" + "═" * 60)
         print("  Video Understanding Query Engine")
         print(f"  Database: {self.db.db_dir}")
         print(f"  Segments: {self.db.count()}")
-        print("═"*60)
+        print("═" * 60)
         print("Commands: /summary  /outline  /slides  /transcript")
         print("          /at MM:SS <question>  /knowledge <topic>  /quit")
         print("Or just type any question.\n")
@@ -170,7 +163,7 @@ class QueryEngine:
                 print("Bye.")
                 break
 
-            elif user_input == "/summary":
+            if user_input == "/summary":
                 print("\n[Generating summary…]\n")
                 print(self.summarize("comprehensive"))
 
@@ -191,7 +184,7 @@ class QueryEngine:
                 parts = user_input[4:].split(" ", 1)
                 if len(parts) >= 1:
                     ts_ms = _parse_timestamp(parts[0])
-                    q     = parts[1] if len(parts) > 1 else "What is happening here?"
+                    q = parts[1] if len(parts) > 1 else "What is happening here?"
                     print(f"\n[Querying at {parts[0]}…]\n")
                     print(self.query_at_time(ts_ms, q))
 
@@ -215,14 +208,14 @@ class QueryEngine:
 
         def _call():
             return self.client.chat.completions.create(
-                model      = self.cfg.LLM_MODEL,
-                messages   = [
+                model=self.cfg.LLM_MODEL,
+                messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user",   "content": prompt},
+                    {"role": "user", "content": prompt},
                 ],
-                max_tokens  = max_tokens,
-                temperature = 0.3,
-                timeout     = _timeout,
+                max_tokens=max_tokens,
+                temperature=0.3,
+                timeout=_timeout,
             ).choices[0].message.content.strip()
 
         try:
@@ -236,19 +229,19 @@ class QueryEngine:
 #  Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _format_context(hits: List[Dict]) -> str:
+def _format_context(hits: list[dict]) -> str:
     parts = []
     for h in hits:
         parts.append(
             f"[{h['timestamp']}]（相关度 {h['score']:.2f}）\n"
             f"摘要：{h['fused_summary']}\n"
             f"转录：{h['transcript']}\n"
-            + (f"幻灯片标题：{h['slide_title']}\n" if h.get("slide_title") else "")
+            + (f"幻灯片标题：{h['slide_title']}\n" if h.get("slide_title") else ""),
         )
     return "视频相关内容：\n\n" + "\n---\n".join(parts)
 
 
-def _format_single_segment(seg: Dict) -> str:
+def _format_single_segment(seg: dict) -> str:
     return (
         f"片段时间：[{seg.get('start_ts', '??:??')}]\n"
         f"转录内容：{seg.get('transcript', '')}\n"
@@ -260,12 +253,12 @@ def _format_single_segment(seg: Dict) -> str:
     )
 
 
-def _sample_segments(segments: List[Dict], max_tokens_budget: int = 6000) -> List[Dict]:
+def _sample_segments(segments: list[dict], max_tokens_budget: int = 6000) -> list[dict]:
     """Evenly sample segments to stay within context budget."""
     if not segments:
         return []
     avg_tokens = 80
-    max_segs   = max_tokens_budget // avg_tokens
+    max_segs = max_tokens_budget // avg_tokens
     if len(segments) <= max_segs:
         return segments
     step = len(segments) / max_segs
@@ -278,7 +271,7 @@ def _parse_timestamp(ts_str: str) -> int:
     try:
         if len(parts) == 2:
             return (int(parts[0]) * 60 + int(parts[1])) * 1000
-        elif len(parts) == 3:
+        if len(parts) == 3:
             return (int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])) * 1000
     except ValueError:
         pass

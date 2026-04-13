@@ -63,6 +63,7 @@ class QueryEngine:
         )
 
         style_instructions = {
+            "headline":      "请用一句话（不超过30个字）概括这个视频最核心的内容。",
             "brief":         "请用3-5句话写一个简洁的概述。",
             "comprehensive": "请写一个结构化摘要，涵盖主要话题、关键要点和结论，使用章节标题组织内容。",
             "bullet":        "请用要点列表形式总结所有关键话题和核心要点。",

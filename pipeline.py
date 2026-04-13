@@ -114,7 +114,7 @@ def run_pipeline(video_path: str, force_reprocess: bool = False):
     if sentences:
         log.info(f"Loaded cached transcript ({len(sentences)} sentences).")
     else:
-        audio_path = extract_audio(video_path, db_dir)
+        audio_path = extract_audio(video_path, db_dir, cfg)
         sentences = transcribe(audio_path, cfg)
         save_transcript(sentences, db_dir)
 

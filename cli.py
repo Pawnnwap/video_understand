@@ -117,6 +117,8 @@ def _print_project_list(projects: list):
 
 def _resolve_project(token: str, projects: list):
     """Resolve token to a Path by list number, exact name, or substring."""
+    # Strip surrounding quotes (single or double) that shells or users may add
+    token = token.strip().strip("\"'")
     try:
         idx = int(token) - 1
         if 0 <= idx < len(projects):

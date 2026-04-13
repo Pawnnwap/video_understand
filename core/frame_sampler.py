@@ -134,15 +134,21 @@ def _extract_one_frame(video_path: str, req: FrameRequest, frames_dir: Path, cfg
             "-i", video_path,
             "-vframes", "1",
             "-q:v", "2",
-            # Cap raw frame size here too — compression happens again before VLM
             "-vf", f"scale='min({cfg.FRAME_MAX_DIM},iw)':-2",
             str(out_path),
         ]
-        result = subprocess.run(cmd, capture_output=True)
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+                timeout=getattr(cfg, "FFMPEG_TIMEOUT_S", 300),
+            )
+        except subprocess.TimeoutExpired:
+            raise OSError(f"ffmpeg frame extract timed out (ts={req.timestamp_ms}ms)")
         if result.returncode != 0:
             raise OSError(
                 f"ffmpeg frame extract failed (ts={req.timestamp_ms}ms): "
-                f"{result.stderr[-300:].decode(errors='replace')}"
+                f"{result.stderr[-300:]}"
             )
 
     try:

@@ -31,7 +31,11 @@ from utils.retry import compress_frame_for_vlm, compute_frame_similarity
 log = logging.getLogger(__name__)
 
 _VLM_RETRY = RetryConfig(max_attempts=4, base_delay_s=3.0, max_delay_s=30.0)
-_OCR_RETRY = RetryConfig(max_attempts=3, base_delay_s=1.0, max_delay_s=8.0)
+# OCR runs in a subprocess; RuntimeError covers worker crashes/OOM
+_OCR_RETRY = RetryConfig(
+    max_attempts=3, base_delay_s=1.0, max_delay_s=8.0,
+    retryable=(ConnectionError, TimeoutError, OSError, RuntimeError),
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

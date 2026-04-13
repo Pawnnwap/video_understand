@@ -33,14 +33,22 @@ log = logging.getLogger("pipeline")
 
 def get_video_duration(video_path: str) -> float:
     """Return video duration in seconds via ffprobe."""
-    result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", video_path],
-        capture_output=True, text=True,
-    )
     try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=cfg.FFMPEG_TIMEOUT_S,
+        )
+        if result.returncode != 0:
+            log.warning(f"ffprobe returned {result.returncode}: {result.stderr.strip()[:200]}")
+            return 0.0
         return float(result.stdout.strip())
-    except ValueError:
+    except subprocess.TimeoutExpired:
+        log.error(f"ffprobe timed out after {cfg.FFMPEG_TIMEOUT_S}s for {video_path}")
+        return 0.0
+    except (ValueError, FileNotFoundError) as e:
+        log.warning(f"ffprobe failed: {e}")
         return 0.0
 
 

@@ -168,12 +168,15 @@ def fuse(sentences, analyses, client, cfg) -> List[FusedSegment]:
         try:
             prompt = _build_fusion_prompt(seg)
 
+            _timeout = getattr(cfg, "LLM_CALL_TIMEOUT_S", 60)
+
             def _call_llm():
                 return client.chat.completions.create(
                     model      = cfg.LLM_MODEL,
                     messages   = [{"role": "user", "content": prompt}],
                     max_tokens = cfg.LLM_MAX_TOKENS_FUSION,
                     temperature= cfg.LLM_TEMPERATURE_FUSION,
+                    timeout    = _timeout,
                 ).choices[0].message.content.strip()
 
             seg.fused_summary = retry_sync(_call_llm, cfg=_FUSION_RETRY, label=f"fusion_llm_seg{sid}")

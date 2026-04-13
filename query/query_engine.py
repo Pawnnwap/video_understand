@@ -211,6 +211,8 @@ class QueryEngine:
     # ──────────────────────────────────────────────────────────────────────
 
     def _llm(self, prompt: str, max_tokens: int = 800) -> str:
+        _timeout = getattr(self.cfg, "LLM_CALL_TIMEOUT_S", 60)
+
         def _call():
             return self.client.chat.completions.create(
                 model      = self.cfg.LLM_MODEL,
@@ -218,8 +220,9 @@ class QueryEngine:
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user",   "content": prompt},
                 ],
-                max_tokens = max_tokens,
-                temperature= 0.3,
+                max_tokens  = max_tokens,
+                temperature = 0.3,
+                timeout     = _timeout,
             ).choices[0].message.content.strip()
 
         try:

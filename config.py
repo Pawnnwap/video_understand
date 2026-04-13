@@ -68,11 +68,18 @@ FRAME_SIMILARITY_THRESHOLD = 0.90
 OCR_RICH_TEXT_MIN_LINES = 3
 
 # ─────────────────────────────────────────────
-#  VLM call settings
+#  VLM / LLM call settings
 # ─────────────────────────────────────────────
-VLM_MAX_TOKENS          = 512       # reduced: OCR is handled by PaddleOCR now
+VLM_MAX_TOKENS          = 512       # max tokens per VLM response
 VLM_TEMPERATURE         = 0.1
-VLM_PARALLEL_WORKERS    = 4         # concurrent VLM calls — tune to VRAM
+VLM_CALL_TIMEOUT_S      = 120       # seconds before a single VLM HTTP call is aborted
+LLM_CALL_TIMEOUT_S      = 60        # seconds before a fusion/query LLM call is aborted
+
+# ─────────────────────────────────────────────
+#  Process timeouts
+# ─────────────────────────────────────────────
+FFMPEG_TIMEOUT_S        = 300       # max seconds for any single ffmpeg/ffprobe subprocess
+FUNASR_TIMEOUT_S        = 0         # 0 = no timeout (long audio files need time)
 
 # ─────────────────────────────────────────────
 #  Retry settings

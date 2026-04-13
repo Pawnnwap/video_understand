@@ -26,19 +26,22 @@ def main():
 
     try:
         from paddleocr import PaddleOCR
-        # Try GPU first; fall back to CPU (avoids CUDA-unavailable crash)
+        # Try each kwargs variant; stop at the first that succeeds
+        ocr = None
         for kwargs in ({"use_gpu": True}, {"use_gpu": False}, {}):
             try:
                 ocr = PaddleOCR(
-                    use_angle_cls        = True,
-                    lang                 = lang,
-                    show_log             = False,
+                    use_angle_cls         = True,
+                    lang                  = lang,
+                    show_log              = False,
                     text_rec_score_thresh = min_conf,
                     **kwargs,
                 )
                 break
             except TypeError:
                 continue
+        if ocr is None:
+            raise RuntimeError("PaddleOCR could not be initialised with any kwargs combination")
         # Use predict() (PP-OCRv5) if available, else ocr() (older)
         try:
             raw = ocr.predict(frame_path)

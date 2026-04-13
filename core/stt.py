@@ -19,6 +19,7 @@ giving the frame sampler meaningful sentence_end and long_pause triggers.
 """
 
 from __future__ import annotations
+import concurrent.futures
 import json
 import subprocess
 import logging
@@ -64,7 +65,14 @@ def extract_audio(video_path: str, out_dir: Path) -> Path:
             "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
             str(audio_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+                timeout=getattr(cfg, "FFMPEG_TIMEOUT_S", 300),
+            )
+        except subprocess.TimeoutExpired:
+            raise OSError(f"ffmpeg audio extraction timed out after {getattr(cfg, 'FFMPEG_TIMEOUT_S', 300)}s")
         if result.returncode != 0:
             raise OSError(f"ffmpeg audio extraction failed:\n{result.stderr[-500:]}")
         return audio_path

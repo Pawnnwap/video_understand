@@ -1,5 +1,4 @@
-"""
-core/stt.py — Phase 1
+"""core/stt.py — Phase 1
 Runs FunASR (paraformer-zh + fsmn-vad + ct-punc) on the extracted audio
 stream and returns sentence segments with millisecond timestamps.
 
@@ -23,7 +22,8 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 _AUDIO_RETRY = RetryConfig(max_attempts=4, base_delay_s=1.0)
 _STT_RETRY = RetryConfig(max_attempts=3, base_delay_s=2.0)
 
-_SENT_END_PUNCT = frozenset('。！？')
+_SENT_END_PUNCT = frozenset("。！？")
 
 
 @dataclass
@@ -50,22 +50,22 @@ class SentenceSegment:
 
 def extract_audio(video_path: str, out_dir: Path, cfg) -> Path:
     """Use ffmpeg to pull 16 kHz mono WAV.  Retries up to 4 times."""
-    audio_path = out_dir / 'audio.wav'
+    audio_path = out_dir / "audio.wav"
     if audio_path.exists():
-        log.info('Audio already extracted, skipping.')
+        log.info("Audio already extracted, skipping.")
         return audio_path
 
     def _run():
-        log.info(f'Extracting audio from {video_path} ...')
+        log.info(f"Extracting audio from {video_path} ...")
         cmd = [
-            'ffmpeg', '-y', '-i', video_path,
-            '-vn', '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le',
+            "ffmpeg", "-y", "-i", video_path,
+            "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
             str(audio_path),
         ]
         try:
             result = subprocess.run(
                 cmd, capture_output=True, text=True,
-                encoding='utf-8', errors='replace',
+                encoding="utf-8", errors="replace",
                 timeout=cfg.FFMPEG_TIMEOUT_S,
             )
         except subprocess.TimeoutExpired:
@@ -74,7 +74,7 @@ def extract_audio(video_path: str, out_dir: Path, cfg) -> Path:
             raise OSError(f"ffmpeg audio extraction failed:\n{result.stderr[-500:]}")
         return audio_path
 
-    return retry_sync(_run, cfg=_AUDIO_RETRY, label='extract_audio')
+    return retry_sync(_run, cfg=_AUDIO_RETRY, label="extract_audio")
 
 
 def transcribe(audio_path: Path, cfg) -> list[SentenceSegment]:
@@ -84,42 +84,42 @@ def transcribe(audio_path: Path, cfg) -> list[SentenceSegment]:
     them into sentences using punctuation and pause gaps.
     """
     try:
-        from funasr import AutoModel
+        pass
     except ImportError:
-        raise ImportError('funasr not installed. Run:  pip install funasr')
+        raise ImportError("funasr not installed. Run:  pip install funasr")
 
     model = _load_funasr_model_with_timeout(cfg)
     raw_result = _run_transcription_with_timeout(audio_path, model, cfg)
-    log.info(f'Raw FunASR segments: {len(raw_result)}')
+    log.info(f"Raw FunASR segments: {len(raw_result)}")
 
     all_words: list[dict] = []
     for seg in raw_result:
-        text = seg.get('text', '')
-        timestamp = seg.get('timestamp', [])
+        text = seg.get("text", "")
+        timestamp = seg.get("timestamp", [])
         if not text or not timestamp:
             continue
         for ch, ts in zip(text, timestamp):
             if not ch.strip():
                 continue
             all_words.append({
-                'word': ch,
-                'start_ms': int(ts[0]),
-                'end_ms': int(ts[1]),
+                "word": ch,
+                "start_ms": int(ts[0]),
+                "end_ms": int(ts[1]),
             })
 
     if not all_words:
-        log.warning('FunASR produced no timestamped words.')
+        log.warning("FunASR produced no timestamped words.")
         return []
 
-    gap_ms = getattr(cfg, 'STT_SENTENCE_SPLIT_GAP_MS', 500)
+    gap_ms = getattr(cfg, "STT_SENTENCE_SPLIT_GAP_MS", 500)
     word_chunks = _split_into_sentences(all_words, gap_ms)
     log.info(f"Re-segmented {len(all_words)} chars -> {len(word_chunks)} sentences (gap_threshold={gap_ms}ms)")
 
     sentences: list[SentenceSegment] = []
     for chunk in word_chunks:
-        text = ''.join(w['word'] for w in chunk)
-        start_ms = chunk[0]['start_ms']
-        end_ms = chunk[-1]['end_ms']
+        text = "".join(w["word"] for w in chunk)
+        start_ms = chunk[0]["start_ms"]
+        end_ms = chunk[-1]["end_ms"]
         sentences.append(SentenceSegment(
             id=len(sentences),
             start_ms=start_ms,
@@ -131,7 +131,7 @@ def transcribe(audio_path: Path, cfg) -> list[SentenceSegment]:
     for i in range(len(sentences) - 1):
         sentences[i].pause_after_ms = max(0, sentences[i + 1].start_ms - sentences[i].end_ms)
 
-    log.info(f'Produced {len(sentences)} sentence segments.')
+    log.info(f"Produced {len(sentences)} sentence segments.")
     return sentences
 
 
@@ -143,12 +143,12 @@ def _split_into_sentences(words: list[dict], gap_ms: int) -> list[list[dict]]:
     current: list[dict] = []
     for i, w in enumerate(words):
         current.append(w)
-        if w['word'] in _SENT_END_PUNCT:
+        if w["word"] in _SENT_END_PUNCT:
             chunks.append(current)
             current = []
             continue
         if i + 1 < len(words):
-            gap = words[i + 1]['start_ms'] - w['end_ms']
+            gap = words[i + 1]["start_ms"] - w["end_ms"]
             if gap >= gap_ms:
                 chunks.append(current)
                 current = []
@@ -159,10 +159,10 @@ def _split_into_sentences(words: list[dict], gap_ms: int) -> list[list[dict]]:
 
 def _run_transcription_with_timeout(audio_path: Path, model, cfg):
     """Run FunASR transcription with optional timeout using ThreadPoolExecutor."""
-    timeout_s = getattr(cfg, 'FUNASR_TIMEOUT_S', 0)
+    timeout_s = getattr(cfg, "FUNASR_TIMEOUT_S", 0)
 
     def _transcribe():
-        log.info('Transcribing with FunASR ...')
+        log.info("Transcribing with FunASR ...")
         return model.generate(
             input=str(audio_path),
             batch_size_s=300,
@@ -175,7 +175,7 @@ def _run_transcription_with_timeout(audio_path: Path, model, cfg):
             try:
                 return future.result(timeout=timeout_s)
             except FuturesTimeoutError:
-                log.error(f'FunASR transcription timed out after {timeout_s}s')
+                log.error(f"FunASR transcription timed out after {timeout_s}s")
                 raise TimeoutError(f"FunASR transcription timed out after {timeout_s}s")
     else:
         return _transcribe()
@@ -183,7 +183,7 @@ def _run_transcription_with_timeout(audio_path: Path, model, cfg):
 
 def _load_funasr_model_with_timeout(cfg):
     """Load FunASR model with optional timeout using ThreadPoolExecutor."""
-    timeout_s = getattr(cfg, 'FUNASR_TIMEOUT_S', 0)
+    timeout_s = getattr(cfg, "FUNASR_TIMEOUT_S", 0)
 
     if timeout_s > 0:
         with ThreadPoolExecutor(max_workers=1) as executor:
@@ -191,7 +191,7 @@ def _load_funasr_model_with_timeout(cfg):
             try:
                 return future.result(timeout=timeout_s)
             except FuturesTimeoutError:
-                log.error(f'FunASR model loading timed out after {timeout_s}s')
+                log.error(f"FunASR model loading timed out after {timeout_s}s")
                 raise TimeoutError(f"FunASR model loading timed out after {timeout_s}s")
     else:
         return _load_funasr_model(cfg)
@@ -201,7 +201,7 @@ def _load_funasr_model(cfg):
     """Load FunASR model, falling back gracefully to CPU if CUDA fails."""
     from funasr import AutoModel
 
-    device = getattr(cfg, 'FUNASR_DEVICE', 'cuda')
+    device = getattr(cfg, "FUNASR_DEVICE", "cuda")
 
     def _try_load(dev):
         log.info(f"Loading FunASR '{cfg.FUNASR_MODEL}' on {dev} ...")
@@ -215,25 +215,25 @@ def _load_funasr_model(cfg):
     try:
         return _try_load(device)
     except Exception as e:
-        log.warning(f'Primary FunASR load failed ({e}), falling back to CPU.')
+        log.warning(f"Primary FunASR load failed ({e}), falling back to CPU.")
         try:
-            return _try_load('cpu')
+            return _try_load("cpu")
         except Exception as e2:
-            raise RuntimeError(f'Could not load FunASR model: {e2}') from e2
+            raise RuntimeError(f"Could not load FunASR model: {e2}") from e2
 
 
 def save_transcript(sentences: list[SentenceSegment], out_dir: Path) -> Path:
-    path = out_dir / 'transcript.json'
-    with open(path, 'w', encoding='utf-8') as f:
+    path = out_dir / "transcript.json"
+    with open(path, "w", encoding="utf-8") as f:
         json.dump([asdict(s) for s in sentences], f, ensure_ascii=False, indent=2)
-    log.info(f'Transcript saved -> {path}')
+    log.info(f"Transcript saved -> {path}")
     return path
 
 
 def load_transcript(out_dir: Path) -> list[SentenceSegment] | None:
-    path = out_dir / 'transcript.json'
+    path = out_dir / "transcript.json"
     if not path.exists():
         return None
-    with open(path, encoding='utf-8') as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     return [SentenceSegment(**d) for d in data]

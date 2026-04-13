@@ -33,8 +33,8 @@ Project commands (once inside a project):
 
 from __future__ import annotations
 
-import io
 import argparse
+import io
 import sys
 
 import config as cfg
@@ -85,6 +85,7 @@ def _build_client(base_url=None, api_key=None):
         base_url=base_url or cfg.LM_STUDIO_BASE_URL,
         api_key=api_key or cfg.LM_STUDIO_API_KEY,
     )
+
 
 def _list_projects(db_root: Path) -> list:
     """Return processed project dirs, newest first."""
@@ -165,16 +166,16 @@ def _load_project(db_path: Path):
 def _run_pipeline(source: str, base_url=None, api_key=None, vlm_model=None, llm_model=None) -> bool:
     """Run pipeline.py on source, inheriting stdio for live output."""
     print(f"\n  Launching pipeline for: {source}")
-    print('  (runs in the foreground -- please wait)\n')
-    cmd = [sys.executable, str(Path(__file__).parent / 'pipeline.py'), source]
+    print("  (runs in the foreground -- please wait)\n")
+    cmd = [sys.executable, str(Path(__file__).parent / "pipeline.py"), source]
     if base_url:
-        cmd.extend(['--base-url', base_url])
+        cmd.extend(["--base-url", base_url])
     if api_key:
-        cmd.extend(['--api-key', api_key])
+        cmd.extend(["--api-key", api_key])
     if vlm_model:
-        cmd.extend(['--vlm-model', vlm_model])
+        cmd.extend(["--vlm-model", vlm_model])
     if llm_model:
-        cmd.extend(['--llm-model', llm_model])
+        cmd.extend(["--llm-model", llm_model])
     r = subprocess.run(cmd)
     return r.returncode == 0
 
@@ -421,12 +422,12 @@ def _workspace_repl(db_root: Path, open_immediately=None):
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description='Video Understanding CLI')
-    parser.add_argument('source', nargs='?', help='Video path, URL, or BV code')
-    parser.add_argument('--base-url', help='LM Studio base URL')
-    parser.add_argument('--api-key', help='API key')
-    parser.add_argument('--vlm-model', help='Vision model name')
-    parser.add_argument('--llm-model', help='Language model name')
+    parser = argparse.ArgumentParser(description="Video Understanding CLI")
+    parser.add_argument("source", nargs="?", help="Video path, URL, or BV code")
+    parser.add_argument("--base-url", help="LM Studio base URL")
+    parser.add_argument("--api-key", help="API key")
+    parser.add_argument("--vlm-model", help="Vision model name")
+    parser.add_argument("--llm-model", help="Language model name")
     args = parser.parse_args()
 
     if args.base_url:
@@ -438,19 +439,18 @@ def main():
     if args.llm_model:
         cfg.LLM_MODEL = args.llm_model
 
-
     db_root = Path(cfg.DB_DIR)
 
     if args.source:
         arg = args.source
         arg_path = Path(arg)
 
-        if arg_path.is_dir() and (arg_path / 'transcript.json').exists():
+        if arg_path.is_dir() and (arg_path / "transcript.json").exists():
             _workspace_repl(db_root, open_immediately=arg_path)
             return
 
         candidate = db_root / arg
-        if candidate.is_dir() and (candidate / 'transcript.json').exists():
+        if candidate.is_dir() and (candidate / "transcript.json").exists():
             _workspace_repl(db_root, open_immediately=candidate)
             return
 
@@ -466,5 +466,5 @@ def main():
         _workspace_repl(db_root)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -1,243 +1,178 @@
-# Video Understanding System
+# Video Understanding Pipeline
 
-Processes any local video file **or YouTube/Bilibili URL** into a queryable knowledge database using:
+A comprehensive video analysis system that transforms lecture/recording videos into queryable knowledge bases using speech-to-text, visual analysis, and semantic search.
 
-- **FunASR** (paraformer-zh + fsmn-vad + ct-punc) for Chinese/multilingual STT with timestamps
-- **PaddleOCR** (PP-OCRv4, subprocess-isolated) for fast on-frame text extraction
-- **Local VLM via LM Studio** for scene understanding, slide structure, diagram description, and visual delta
-- **ChromaDB** for semantic vector search
-- **Local LLM via LM Studio** for RAG-based Q&A and fusion summaries
+## Features
 
-All models run fully offline after the first download. No cloud APIs required.
+- **Speech-to-Text**: FunASR (paraformer-zh) for Chinese-native transcription with timestamps
+- **Visual Analysis**: VLM frame analysis + PaddleOCR for slide content extraction
+- **Semantic Search**: ChromaDB vector store for knowledge retrieval
+- **Interactive CLI**: Query processed videos with natural language
 
----
+## Requirements
 
-## Setup
+- Python 3.10+
+- ffmpeg (for audio extraction)
+- LM Studio (for VLM/LLM inference)
+- CUDA-capable GPU recommended
 
-### 1. System dependency
-
-```bash
-# macOS
-brew install ffmpeg
-
-# Ubuntu / Debian
-sudo apt install ffmpeg
-
-# Windows — download from https://ffmpeg.org/download.html and add to PATH
-```
-
-### 2. Python environment
-
-Recommended: use a dedicated conda environment (Python 3.11).
+## Installation
 
 ```bash
+# Clone repository
+git clone <repo-url>
+cd video_summarize
+
+# Create conda environment
+conda create -n video python=3.10
+conda activate video
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-Key packages: `funasr`, `paddleocr`, `paddlepaddle`, `openai`, `chromadb`, `sentence-transformers`, `yt-dlp`, `Pillow`
+## Configuration
 
-### 3. Configure `config.py`
+Configuration is via `config.py` or environment variables:
 
-```python
-# LM Studio endpoint
-LM_STUDIO_BASE_URL = "http://127.0.0.1:1234/v1"
-VLM_MODEL          = "qwen3.5-4b"   # vision model loaded in LM Studio
-LLM_MODEL          = "qwen3.5-4b"   # text model for fusion + Q&A
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `LM_STUDIO_BASE_URL` | `http://127.0.0.1:1234/v1` | LM Studio endpoint |
+| `LM_STUDIO_API_KEY` | `lm-studio` | API key |
+| `VLM_MODEL` | `qwen3.5-4b` | Vision model name |
+| `LLM_MODEL` | `qwen3.5-4b` | Language model name |
 
-# STT
-FUNASR_MODEL       = "paraformer-zh"
-FUNASR_DEVICE      = "cuda"          # or "cpu"
-FUNASR_LANGUAGE    = "zh"            # "zh" | "en" | "auto"
+CLI overrides (highest priority):
 
-# OCR
-OCR_LANG           = "ch"            # "ch" = simplified Chinese + English
-OCR_USE_GPU        = True
-
-# Frame deduplication — consecutive frames more similar than this are skipped
-FRAME_SIMILARITY_THRESHOLD = 0.90
+```bash
+python cli.py video.mp4 --base-url http://localhost:1234/v1 --vlm-model qwen3.5-4b
+python pipeline.py URL --api-key your-key --llm-model qwen3.5-4b
+python query.py ./video_db/project --model qwen3.5-4b
 ```
-
-### 4. Start LM Studio
-
-Load a vision-capable model (e.g. Qwen2.5-VL, LLaVA), enable the local server on port 1234.
-
----
 
 ## Usage
 
-### Process a local video file
+### Process a Video
 
 ```bash
-python pipeline.py my_lecture.mp4
+# Local file
+python cli.py lecture.mp4
+
+# YouTube/Bilibili URL
+python cli.py https://www.youtube.com/watch?v=...
+python cli.py BV1GE411T7Wv
+python cli.py dQw4w9WgXcQ  # YouTube ID
+
+# Direct pipeline
+python pipeline.py video.mp4 --force  # Force reprocessing
 ```
 
-### Process a YouTube or Bilibili video (auto-download)
-
-Pass just the short code — no URL required:
+### Query a Processed Video
 
 ```bash
-# YouTube: 11-character video ID
-python pipeline.py dQw4w9WgXcQ
-
-# Bilibili: BV code
-python pipeline.py BV1GE411T7Wv
-```
-
-Full URLs also work if you prefer:
-
-```bash
-python pipeline.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-python pipeline.py "https://www.bilibili.com/video/BV1GE411T7Wv"
-```
-
-The video is downloaded automatically via **yt-dlp** to `./video_db/_downloads/` at up to 720p MP4, then processed through the normal pipeline. Re-running the same code skips re-downloading if the file already exists.
-
-> **Note**: Bilibili downloads use your browser's Edge cookies automatically. If cookie extraction fails (Windows DPAPI error), the downloader retries without cookies.
-
-### Process and immediately query
-
-```bash
-python pipeline.py my_lecture.mp4 --query
-```
-
-### Force full reprocessing
-
-```bash
-python pipeline.py my_lecture.mp4 --force
-```
-
----
-
-## Output files
-
-Each processed video gets its own directory under `./video_db/<stem>/`:
-
-| File | Contents |
-|---|---|
-| `audio.wav` | Extracted 16 kHz mono audio |
-| `transcript.json` | FunASR sentence segments with ms timestamps |
-| `frame_schedule.json` | Adaptive frame selection plan |
-| `frames/` | Extracted JPEG frames (selected only) |
-| `frame_analyses.json` | Per-frame OCR + VLM results |
-| `fused_segments.json` | Merged transcript + visual per segment |
-| `timeline.json` | Full structured timeline + slide index |
-| `chroma/` | ChromaDB vector store |
-
----
-
-## Querying
-
-### Interactive REPL
-
-```bash
+# Interactive REPL
+python cli.py
 python query.py ./video_db/my_lecture
-```
 
-### One-shot CLI queries
-
-```bash
+# One-shot queries
+python query.py ./video_db/my_lecture --ask "What is the main topic?"
 python query.py ./video_db/my_lecture --summary
-python query.py ./video_db/my_lecture --outline
-python query.py ./video_db/my_lecture --slides
-python query.py ./video_db/my_lecture --transcript
-python query.py ./video_db/my_lecture --ask "What is the attention mechanism?"
-python query.py ./video_db/my_lecture --knowledge "transformer architecture"
-python query.py ./video_db/my_lecture --at 14:32 --question "What slide is shown here?"
+python query.py ./video_db/my_lecture --at 05:30 --question "What slide is shown?"
 ```
 
-### REPL commands
+### CLI Commands
 
-```
-/summary            full video summary
-/outline            topic outline from slide titles
-/slides             list all slide changes with timestamps
-/transcript         full spoken transcript
-/at 05:30 <q>       query what was happening at a specific time
-/knowledge <topic>  deep extraction on a topic
-/quit               exit
-<any question>      semantic search + RAG answer
-```
+Inside the interactive workspace:
 
----
+| Command | Description |
+|---------|-------------|
+| `list` / `ls` | List processed projects |
+| `open <name|#>` | Enter a project |
+| `process <path>` | Process new video |
+| `<BV/URL>` | Download, process, and open |
+
+Inside a project:
+
+| Command | Description |
+|---------|-------------|
+| `/summary` | Comprehensive summary |
+| `/headline` | One-line headline |
+| `/brief` | 3-5 sentence overview |
+| `/outline` | Topic outline |
+| `/slides` | List slide changes |
+| `/transcript` | Full transcript |
+| `/at MM:SS [q]` | Query at timestamp |
+| `/knowledge <topic>` | Deep extraction |
+| `<any text>` | Semantic search |
 
 ## Architecture
 
 ```
-Input: local file  OR  YouTube / Bilibili URL
-  │
-  ├─ yt-dlp ──► MP4 (≤720p)          [URL only]
-  │
-  ├─ ffmpeg ──► audio.wav
-  │
-  ▼
-Phase 1: Speech-to-Text  (FunASR paraformer-zh)
-  │  sentence segments with ms timestamps + pause durations
-  │
-  ▼
-Phase 2a: Adaptive Frame Sampler
-  │  trigger: sentence_end  (t − 200 ms)
-  │  trigger: long pause midpoint  (>800 ms)
-  │  trigger: 1 fps floor fallback
-  │  → sparse frame schedule (≈40–120 frames for 30-min video)
-  │
-  ▼
-Phase 2b: Dual-track Frame Analysis
-  │
-  ├─ Track A: PaddleOCR (subprocess)
-  │    Fast dedicated text extraction — slides, code, labels.
-  │    Runs in a separate process to avoid PyTorch/Paddle CUDA conflict.
-  │    Similarity pre-filter: consecutive frames with perceptual
-  │    similarity ≥ 0.90 are skipped entirely (no OCR, no VLM call).
-  │
-  └─ Track B: VLM  (LM Studio, sequential)
-       scene description → slide JSON → diagram description → visual delta
-       Images compressed to JPEG (quality 85, max 1280 px) before encoding.
-       Identical frames skipped via content hash cache.
-  │
-  ▼
-Phase 3: Temporal Fusion  (LLM)
-  │  group N sentences → find best visual frame → LLM synthesis
-  │  resolves deictic references ("as shown here" → actual slide content)
-  │
-  ▼
-Phase 4: Database
-  ├─ ChromaDB (vector store)  — semantic search, RAG
-  └─ timeline.json            — timestamp lookup, slide index, full export
+video.mp4
+    │
+    ▼ [Phase 1: STT]
+transcript.json  (sentence segments with timestamps)
+    │
+    ▼ [Phase 2a: Frame Sampling]
+frame_schedule.json  (adaptive triggers)
+    │
+    ▼ [Phase 2b: Visual Analysis]
+frame_analyses.json  (OCR + VLM per frame)
+    │
+    ▼ [Phase 3: Fusion]
+fused_segments.json  (speech + visual merged)
+    │
+    ▼ [Phase 4: Database]
+chroma/  (vector store)
+timeline.json  (structured timeline)
 ```
 
----
+## Timeout Configuration
 
-## Performance notes
+Timeouts are configurable in `config.py`:
 
-- **Similarity dedup** skips redundant frames before any AI inference runs. On a typical lecture recording, 80–95% of frames may be skipped.
-- **Sequential VLM calls** — one frame at a time, four sub-prompts each — avoids overwhelming a local LM Studio server with concurrent requests.
-- **OCR subprocess isolation** prevents PyTorch and PaddlePaddle from conflicting over shared CUDA device registrations.
-- Re-runs are fully incremental: transcript, frames, and analyses are each cached separately and only missing work is re-done.
-- Reduce `FALLBACK_FPS_FLOOR` (e.g. to `0.5`) to halve the floor frame count for very long videos.
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `VLM_CALL_TIMEOUT_S` | 120 | VLM HTTP call timeout |
+| `LLM_CALL_TIMEOUT_S` | 60 | LLM fusion/query timeout |
+| `OCR_TIMEOUT_S` | 60 | OCR subprocess timeout |
+| `FFMPEG_TIMEOUT_S` | 300 | ffmpeg subprocess timeout |
+| `FUNASR_TIMEOUT_S` | 0 | FunASR timeout (0=unlimited) |
 
----
+## Project Structure
 
-## Extending the system
-
-```python
-from core.database import VideoDatabase
-from query.query_engine import QueryEngine
-from openai import OpenAI
-import config as cfg
-
-db     = VideoDatabase("./video_db/my_lecture", cfg)
-client = OpenAI(base_url=cfg.LM_STUDIO_BASE_URL, api_key=cfg.LM_STUDIO_API_KEY)
-engine = QueryEngine(db, client, cfg)
-
-# Semantic search
-hits = db.search("gradient descent", n_results=5)
-
-# Ask anything
-answer = engine.ask("Summarise the part about backpropagation")
-
-# Full summary
-summary = engine.summarize(style="comprehensive")  # "brief" | "comprehensive" | "bullet"
-
-# Get all segments mentioning a topic
-deep = engine.extract_knowledge("attention mechanism")
 ```
+video_summarize/
+├── cli.py              # Interactive workspace CLI
+├── pipeline.py         # Main processing pipeline
+├── query.py            # Standalone query interface
+├── config.py           # Configuration
+├── downloader.py       # Video download (yt-dlp)
+├── retry.py            # Retry utilities
+├── core/
+│   ├── stt.py          # Speech-to-text (FunASR)
+│   ├── frame_sampler.py # Adaptive frame extraction
+│   ├── vlm_analyser.py # Visual analysis
+│   ├── fusion.py       # Speech-visual fusion
+│   ├── database.py     # ChromaDB + timeline
+│   └── ocr_worker.py   # OCR subprocess
+├── query/
+│   └── query_engine.py # RAG query engine
+├── utils/
+│   └── retry.py        # Retry re-exports
+└── video_db/           # Processed project storage
+```
+
+## Troubleshooting
+
+**ffmpeg not found**: Install ffmpeg and add to PATH.
+
+**CUDA out of memory**: Set `FUNASR_DEVICE=cpu` in config.py.
+
+**LM Studio connection failed**: Verify LM Studio is running and model loaded.
+
+**PaddleOCR fails**: Set `OCR_USE_GPU=False` if no CUDA.
+
+## License
+
+MIT

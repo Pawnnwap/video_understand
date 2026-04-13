@@ -89,11 +89,11 @@ def run_pipeline(video_path: str, force_reprocess: bool = False):
             from pathlib import Path as _P
             local = resolve_source(
                 video_path,
-                download_dir=str(_P(cfg.DB_DIR) / '_downloads'),
-                max_duration_sec=getattr(cfg, 'DOWNLOAD_MAX_DURATION_SEC', 0),
+                download_dir=str(_P(cfg.DB_DIR) / "_downloads"),
+                max_duration_sec=getattr(cfg, "DOWNLOAD_MAX_DURATION_SEC", 0),
             )
             video_path = str(local)
-            log.info(f'Using downloaded file: {video_path}')
+            log.info(f"Using downloaded file: {video_path}")
         except Exception as e:
             log.error(f"Download failed: {e}")
             sys.exit(1)
@@ -172,7 +172,20 @@ def main():
     parser.add_argument("video", help="Local video path OR YouTube/Bilibili URL")
     parser.add_argument("--force", action="store_true", help="Force full reprocessing")
     parser.add_argument("--query", action="store_true", help="Launch interactive query REPL after processing")
+    parser.add_argument("--base-url", help="LM Studio base URL")
+    parser.add_argument("--api-key", help="API key")
+    parser.add_argument("--vlm-model", help="Vision model name")
+    parser.add_argument("--llm-model", help="Language model name")
     args = parser.parse_args()
+
+    if args.base_url:
+        cfg.LM_STUDIO_BASE_URL = args.base_url
+    if args.api_key:
+        cfg.LM_STUDIO_API_KEY = args.api_key
+    if args.vlm_model:
+        cfg.VLM_MODEL = args.vlm_model
+    if args.llm_model:
+        cfg.LLM_MODEL = args.llm_model
 
     db = run_pipeline(args.video, force_reprocess=args.force)
 

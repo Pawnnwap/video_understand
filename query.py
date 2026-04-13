@@ -53,9 +53,18 @@ def main():
     parser.add_argument("--knowledge", help="Deep knowledge extraction on a topic")
     parser.add_argument("--at", help="Query at timestamp MM:SS", metavar="MM:SS")
     parser.add_argument("--question", help="Question for --at (optional)", default="What is happening here?")
+    parser.add_argument("--base-url", help="LM Studio base URL")
+    parser.add_argument("--api-key", help="API key")
+    parser.add_argument("--model", help="Model name for queries")
     args = parser.parse_args()
 
-    # Load DB
+    if args.base_url:
+        cfg.LM_STUDIO_BASE_URL = args.base_url
+    if args.api_key:
+        cfg.LM_STUDIO_API_KEY = args.api_key
+    if args.model:
+        cfg.LLM_MODEL = args.model
+
     try:
         db = VideoDatabase.load(args.db_dir, cfg)
     except Exception as e:

@@ -152,11 +152,11 @@ def _download(url: str, out_dir: Path, max_duration_sec: int = 0) -> Path:
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
-            'Referer': 'https://www.bilibili.com/',
+            "Referer": "https://www.bilibili.com/",
         },
-        'retries': 5,
-        'fragment_retries': 5,
-        'socket_timeout': 30,
+        "retries": 5,
+        "fragment_retries": 5,
+        "socket_timeout": 30,
     }
 
     log.info(f"Downloading: {url}")

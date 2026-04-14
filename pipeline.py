@@ -118,9 +118,13 @@ def run_pipeline(video_path: str, force_reprocess: bool = False):
         sentences = transcribe(audio_path, cfg)
         save_transcript(sentences, db_dir)
 
+    from core.lang import detect_language
+    lang = detect_language(sentences)
+    log.info(f"Detected language: {lang}")
+
     # ── PHASE 2a : Frame schedule ────────────────────────────────────────
     log.info("\n── Phase 2a: Adaptive Frame Sampling ───────────────────")
-    from core.frame_sampler import build_frame_schedule, extract_frames, save_schedule
+    from core.vision.frame_sampler import build_frame_schedule, extract_frames, save_schedule
 
     schedule = build_frame_schedule(sentences, cfg)
     save_schedule(schedule, db_dir)
@@ -129,9 +133,9 @@ def run_pipeline(video_path: str, force_reprocess: bool = False):
 
     # ── PHASE 2b : VLM analysis ──────────────────────────────────────────
     log.info("\n── Phase 2b: VLM Frame Analysis ─────────────────────────")
-    from core.vlm_analyser import analyse_all_frames
+    from core.vision.vlm_analyser import analyse_all_frames
 
-    analyses = analyse_all_frames(frame_results, client, cfg, db_dir)
+    analyses = analyse_all_frames(frame_results, client, cfg, db_dir, lang=lang)
 
     # ── PHASE 3 : Temporal fusion ────────────────────────────────────────
     log.info("\n── Phase 3: Temporal Fusion ─────────────────────────────")
@@ -141,7 +145,7 @@ def run_pipeline(video_path: str, force_reprocess: bool = False):
     if fused:
         log.info(f"Loaded cached fusion ({len(fused)} segments).")
     else:
-        fused = fuse(sentences, analyses, client, cfg)
+        fused = fuse(sentences, analyses, client, cfg, lang=lang)
         save_fused(fused, db_dir)
 
     # ── PHASE 4 : Database ───────────────────────────────────────────────

@@ -84,7 +84,7 @@ def transcribe(audio_path: Path, cfg) -> list[SentenceSegment]:
     them into sentences using punctuation and pause gaps.
     """
     try:
-        pass
+        import funasr  # noqa: F401 — validate install before heavy work
     except ImportError:
         raise ImportError("funasr not installed. Run:  pip install funasr")
 

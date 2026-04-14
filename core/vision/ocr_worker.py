@@ -1,4 +1,4 @@
-"""ocr_worker.py — standalone OCR subprocess
+"""core/vision/ocr_worker.py — standalone OCR subprocess
 Called by vlm_analyser.run_ocr() to avoid PyTorch/PaddlePaddle CUDA conflict.
 
 Usage (internal):
@@ -14,7 +14,7 @@ import sys
 os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
 
 
-def main():
+def main() -> None:
     if len(sys.argv) < 4:
         print(json.dumps({"lines": [], "error": "usage: ocr_worker.py <path> <lang> <conf>"}))
         sys.exit(1)
@@ -42,11 +42,11 @@ def main():
                 continue
         if ocr is None:
             raise RuntimeError("PaddleOCR could not be initialised with any kwargs combination")
-        # Use predict() (PP-OCRv5) if available, else ocr() (older)
+
+        # Use predict() (PP-OCRv5) if available, else ocr() (older API)
         try:
             raw = ocr.predict(frame_path)
-            # predict() returns list of dicts with 'rec_text'/'rec_score'
-            lines = []
+            lines: list[str] = []
             if raw:
                 for page in raw:
                     if not page:
@@ -58,7 +58,6 @@ def main():
                             if conf >= min_conf and text.strip():
                                 lines.append(text.strip())
         except (AttributeError, TypeError):
-            # Fallback to old ocr() API
             result = ocr.ocr(frame_path, cls=True)
             lines = []
             if result:
@@ -67,12 +66,15 @@ def main():
                         continue
                     for item in page:
                         if isinstance(item, dict):
-                            text, conf = item.get("rec_text", ""), item.get("rec_score", 1.0)
+                            text = item.get("rec_text", "")
+                            conf = item.get("rec_score", 1.0)
                         else:
                             text, conf = item[1][0], item[1][1]
                         if conf >= min_conf and text.strip():
                             lines.append(text.strip())
+
         print(json.dumps({"lines": lines, "error": None}))
+
     except Exception as e:
         print(json.dumps({"lines": [], "error": str(e)}))
 

@@ -1,4 +1,4 @@
-"""core/frame_sampler.py — Phase 2a
+"""core/vision/frame_sampler.py — Phase 2a
 Builds an STT-driven frame schedule, then extracts only those frames via ffmpeg.
 Retry logic wraps every ffmpeg subprocess call.
 """
@@ -32,9 +32,9 @@ class FrameRequest:
 
 def build_frame_schedule(sentences, cfg) -> list[FrameRequest]:
     requests: list[FrameRequest] = []
-    seen_buckets = set()
+    seen_buckets: set[int] = set()
 
-    def add(ts_ms: int, reason: str, sid: int):
+    def add(ts_ms: int, reason: str, sid: int) -> None:
         ts_ms = max(0, ts_ms)
         bucket = ts_ms // 300          # 300 ms de-dup window
         if bucket not in seen_buckets:
@@ -88,20 +88,17 @@ def extract_frames(
     cfg,
 ) -> list[tuple[FrameRequest, Path]]:
     """Decode only scheduled frames via ffmpeg.
+
     Skips already-extracted frames (resume-safe).
     Each ffmpeg call is retried up to 4 times.
     """
     frames_dir = out_dir / "frames"
     frames_dir.mkdir(exist_ok=True)
 
-    to_extract = []
-    for req in schedule:
-        path = _frame_path(frames_dir, req.timestamp_ms)
-        if not path.exists():
-            to_extract.append(req)
+    to_extract = [req for req in schedule if not _frame_path(frames_dir, req.timestamp_ms).exists()]
 
     if to_extract:
-        log.info(f"Extracting {len(to_extract)} new frames …")
+        log.info(f"Extracting {len(to_extract)} new frames ...")
         for req in to_extract:
             _extract_one_frame(video_path, req, frames_dir, cfg)
     else:
@@ -120,12 +117,12 @@ def extract_frames(
     return results
 
 
-def _extract_one_frame(video_path: str, req: FrameRequest, frames_dir: Path, cfg):
+def _extract_one_frame(video_path: str, req: FrameRequest, frames_dir: Path, cfg) -> None:
     """Extract a single frame at req.timestamp_ms.  Retried on failure."""
     out_path = _frame_path(frames_dir, req.timestamp_ms)
     ts_sec = req.timestamp_ms / 1000.0
 
-    def _run():
+    def _run() -> None:
         cmd = [
             "ffmpeg", "-y",
             "-ss", f"{ts_sec:.3f}",
@@ -165,8 +162,8 @@ def frame_hash(frame_path: Path) -> str:
         return hashlib.md5(f.read(8192)).hexdigest()
 
 
-def save_schedule(schedule: list[FrameRequest], out_dir: Path):
+def save_schedule(schedule: list[FrameRequest], out_dir: Path) -> None:
     path = out_dir / "frame_schedule.json"
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump([r.__dict__ for r in schedule], f, indent=2)
-    log.info(f"Frame schedule saved → {path}")
+    log.info(f"Frame schedule saved -> {path}")

@@ -49,28 +49,41 @@ def _find_best_frame(sentence_ids: list[int], analyses):
     return candidates[0]
 
 
-FUSION_PROMPT = """\
-你正在分析一段视频录像的片段。以下是该片段的语音转录内容和视觉画面描述。
+_FUSION_PROMPT_ZH = """\
+视频片段。
 
-语音转录：
-{transcript}
+转录：{transcript}
 
-视觉内容：
-- 画面描述：{scene}
-- 幻灯片标题：{slide_title}
-- 幻灯片要点：{slide_bullets}
-- 屏幕文字（OCR）：{ocr_text}
-- 图表/图形：{diagram}
-- 画面变化：{delta}
+视觉：
+- 画面：{scene}
+- 幻灯片：{slide_title}
+- 要点：{slide_bullets}
+- OCR：{ocr_text}
+- 图表：{diagram}
+- 变化：{delta}
 
-请用2-4句话写一段简洁的中文摘要，将说话内容与画面内容融合在一起。
-将指示性表达（如"如图所示"、"这里"、"如下"）替换为实际显示的内容。
-只关注知识和信息内容。"""
+用2-4句融合语音与画面，写成中文摘要。将"如图所示""这里""如下"替换为实际内容。只写知识内容。"""
+
+_FUSION_PROMPT_EN = """\
+Video segment.
+
+Transcript: {transcript}
+
+Visual:
+- Scene: {scene}
+- Slide: {slide_title}
+- Bullets: {slide_bullets}
+- OCR: {ocr_text}
+- Diagram: {diagram}
+- Change: {delta}
+
+Write a 2-4 sentence summary fusing speech with visuals. Replace "as shown", "here", "below" with actual content shown. Focus on knowledge only."""
 
 
-def _build_fusion_prompt(seg: FusedSegment) -> str:
+def _build_fusion_prompt(seg: FusedSegment, lang: str = "zh") -> str:
+    template = _FUSION_PROMPT_ZH if lang == "zh" else _FUSION_PROMPT_EN
     bullets_str = "; ".join(seg.slide_bullets) if seg.slide_bullets else "—"
-    return FUSION_PROMPT.format(
+    return template.format(
         transcript=seg.transcript or "—",
         scene=seg.scene_description or "—",
         slide_title=seg.slide_title or "—",
@@ -81,12 +94,14 @@ def _build_fusion_prompt(seg: FusedSegment) -> str:
     )
 
 
-def fuse(sentences, analyses, client, cfg) -> list[FusedSegment]:
+def fuse(sentences, analyses, client, cfg, lang: str = "zh") -> list[FusedSegment]:
     analyses_list = list(analyses)
     n = len(sentences)
     chunk_size = cfg.FUSION_SEGMENT_SIZE
+    if chunk_size < 1:
+        raise ValueError(f"FUSION_SEGMENT_SIZE must be >= 1, got {chunk_size}")
     fused_segments: list[FusedSegment] = []
-    log.info(f"Fusing {n} sentences in chunks of {chunk_size} ...")
+    log.info(f"Fusing {n} sentences in chunks of {chunk_size} (lang={lang}) ...")
     for chunk_start in range(0, n, chunk_size):
         chunk = sentences[chunk_start: chunk_start + chunk_size]
         sid = chunk_start // chunk_size
@@ -115,7 +130,7 @@ def fuse(sentences, analyses, client, cfg) -> list[FusedSegment]:
             seg.frame_path = best_frame.frame_path
             seg.is_slide_change = best_frame.visual_delta in ("slide_change", "major_change")
         try:
-            prompt = _build_fusion_prompt(seg)
+            prompt = _build_fusion_prompt(seg, lang)
             _timeout = getattr(cfg, "LLM_CALL_TIMEOUT_S", 60)
 
             def _call_llm():

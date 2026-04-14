@@ -23,6 +23,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 from utils.retry import (
     RetryConfig,
@@ -141,8 +142,6 @@ def run_ocr(frame_path: Path, cfg) -> tuple[str, list[str]]:
 #  Track B — VLM prompt sets  (ZH and EN)
 # ─────────────────────────────────────────────────────────────────────────────
 
-from typing import NamedTuple
-
 
 class _PromptSet(NamedTuple):
     scene: str
@@ -242,8 +241,8 @@ def _parse_slide_json(analysis: FrameAnalysis, raw: str) -> None:
         clean = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
         data = json.loads(clean)
         if data.get("is_slide"):
-            analysis.slide_type    = data.get("slide_type", "")
-            analysis.slide_title   = data.get("title", "") or ""
+            analysis.slide_type = data.get("slide_type", "")
+            analysis.slide_title = data.get("title", "") or ""
             analysis.slide_bullets = data.get("bullets", []) or []
     except (json.JSONDecodeError, AttributeError):
         pass
@@ -274,9 +273,9 @@ def analyse_frame(
         cached = frame_cache[fhash]
         result = FrameAnalysis(**asdict(cached))
         result.timestamp_ms = req.timestamp_ms
-        result.reason       = req.reason
-        result.sentence_id  = req.sentence_id
-        result.frame_path   = str(frame_path)
+        result.reason = req.reason
+        result.sentence_id = req.sentence_id
+        result.frame_path = str(frame_path)
         result.visual_delta = "same"
         return result
 
@@ -299,14 +298,14 @@ def analyse_frame(
             analysis.ocr_error = str(e)
             ocr_text, ocr_lines = "", []
 
-    analysis.ocr_text         = ocr_text
-    analysis.ocr_lines        = ocr_lines
+    analysis.ocr_text = ocr_text
+    analysis.ocr_lines = ocr_lines
     analysis.has_text_content = bool(ocr_text.strip())
 
     if skip_vlm:
-        analysis.vlm_skipped  = True
+        analysis.vlm_skipped = True
         analysis.visual_delta = "new_content"
-        frame_cache[fhash]    = analysis
+        frame_cache[fhash] = analysis
         return analysis
 
     # Track B: VLM
@@ -391,20 +390,20 @@ def analyse_all_frames(
     """
     prompts = _get_prompts(lang)
     log.info(f"VLM prompt language: {lang}")
-    cache_path  = out_dir / "frame_analyses.json"
+    cache_path = out_dir / "frame_analyses.json"
     frame_cache: dict[str, FrameAnalysis] = {}
 
-    existing       = _load_analyses(cache_path)
+    existing = _load_analyses(cache_path)
     existing_by_ts = {a.timestamp_ms: a for a in existing}
 
-    sim_threshold  = getattr(cfg, "FRAME_SIMILARITY_THRESHOLD", 0.90)
+    sim_threshold = getattr(cfg, "FRAME_SIMILARITY_THRESHOLD", 0.90)
     vlm_skip_floor = getattr(cfg, "OCR_RICH_TEXT_MIN_LINES", 3)
 
-    n                   = len(frame_results)
+    n = len(frame_results)
     analyses: list[FrameAnalysis] = []
-    completed           = 0
-    skipped_sim         = 0
-    skipped_vlm         = 0
+    completed = 0
+    skipped_sim = 0
+    skipped_vlm = 0
     last_analyzed_path: Path | None = None
 
     # Bounded deque prevents memory growth on very long videos and keeps
@@ -425,11 +424,11 @@ def analyse_all_frames(
             sim = compute_frame_similarity(path, last_analyzed_path)
             if sim >= sim_threshold:
                 prev = analyses[-1]
-                dup  = FrameAnalysis(**asdict(prev))
+                dup = FrameAnalysis(**asdict(prev))
                 dup.timestamp_ms = req.timestamp_ms
-                dup.reason       = req.reason
-                dup.sentence_id  = req.sentence_id
-                dup.frame_path   = str(path)
+                dup.reason = req.reason
+                dup.sentence_id = req.sentence_id
+                dup.frame_path = str(path)
                 dup.visual_delta = "same"
                 analyses.append(dup)
                 skipped_sim += 1
@@ -444,22 +443,22 @@ def analyse_all_frames(
             ocr_text, ocr_lines = "", []
 
         # 4. Adaptive VLM gate
-        n_lines  = len(ocr_lines)
-        ocr_avg  = sum(ocr_line_history) / len(ocr_line_history) if ocr_line_history else 0.0
+        n_lines = len(ocr_lines)
+        ocr_avg = sum(ocr_line_history) / len(ocr_line_history) if ocr_line_history else 0.0
         skip_vlm = n_lines >= max(vlm_skip_floor, ocr_avg)
         if skip_vlm:
             skipped_vlm += 1
 
         # 5. Analyse
-        prev   = analyses[-1] if analyses else None
+        prev = analyses[-1] if analyses else None
         result = analyse_frame(
             req, path, prev, client, cfg, frame_cache, prompts,
             ocr_prefetch=(ocr_text, ocr_lines),
             skip_vlm=skip_vlm,
         )
         analyses.append(result)
-        completed          += 1
-        last_analyzed_path  = path
+        completed += 1
+        last_analyzed_path = path
         ocr_line_history.append(n_lines)
 
         log.info(

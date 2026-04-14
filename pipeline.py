@@ -15,11 +15,11 @@ import logging
 
 # Block all HuggingFace network calls — everything must run fully locally.
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 import config as cfg
+from utils.video import get_video_duration
 
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -32,27 +32,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("pipeline")
-
-
-def get_video_duration(video_path: str) -> float:
-    """Return video duration in seconds via ffprobe."""
-    try:
-        result = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", video_path],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=cfg.FFMPEG_TIMEOUT_S,
-        )
-        if result.returncode != 0:
-            log.warning(f"ffprobe returned {result.returncode}: {result.stderr.strip()[:200]}")
-            return 0.0
-        return float(result.stdout.strip())
-    except subprocess.TimeoutExpired:
-        log.error(f"ffprobe timed out after {cfg.FFMPEG_TIMEOUT_S}s for {video_path}")
-        return 0.0
-    except (ValueError, FileNotFoundError) as e:
-        log.warning(f"ffprobe failed: {e}")
-        return 0.0
 
 
 def make_db_dir(video_path: str, db_root: str) -> Path:
@@ -124,7 +103,11 @@ def run_pipeline(video_path: str, force_reprocess: bool = False):
 
     # ── PHASE 2a : Frame schedule ────────────────────────────────────────
     log.info("\n── Phase 2a: Adaptive Frame Sampling ───────────────────")
-    from core.vision.frame_sampler import build_frame_schedule, extract_frames, save_schedule
+    from core.vision.frame_sampler import (
+        build_frame_schedule,
+        extract_frames,
+        save_schedule,
+    )
 
     schedule = build_frame_schedule(sentences, cfg)
     save_schedule(schedule, db_dir)

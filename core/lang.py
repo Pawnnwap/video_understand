@@ -8,6 +8,7 @@ Returns
 -------
 "zh"  Chinese (CJK characters dominate)
 "en"  English / other latin-script language
+
 """
 
 from __future__ import annotations
@@ -28,9 +29,9 @@ def detect_language(sentences, sample_chars: int = _SAMPLE_CHARS) -> str:
             break
     sample = sample[:sample_chars]
 
-    cjk   = sum(1 for ch in sample if _is_cjk(ch))
+    cjk = sum(1 for ch in sample if _is_cjk(ch))
     ascii_ = sum(1 for ch in sample if ch.isascii() and ch.isalpha())
-    total  = cjk + ascii_
+    total = cjk + ascii_
 
     if total == 0:
         return "zh"  # no recognisable alpha chars → default to Chinese

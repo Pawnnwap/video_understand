@@ -42,6 +42,76 @@ pip install -r requirements.txt
 | `VLM_MODEL` | `qwen3.5-4b` | 视觉模型名称 |
 | `LLM_MODEL` | `qwen3.5-4b` | 语言模型名称 |
 
+### FunASR（语音识别）
+
+| 参数 | 默认值 | 描述 |
+|------|--------|------|
+| `FUNASR_MODEL` | `paraformer-zh` | ASR模型 |
+| `FUNASR_VAD_MODEL` | `fsmn-vad` | 语音活动检测模型 |
+| `FUNASR_PUNC_MODEL` | `ct-punc` | 标点模型 |
+| `FUNASR_DEVICE` | `cuda` | 设备（cuda/cpu） |
+| `FUNASR_LANGUAGE` | `zh` | 语言代码 |
+| `FUNASR_TIMEOUT_S` | `0` | 超时（0=无限制） |
+| `STT_SENTENCE_SPLIT_GAP_MS` | `500` | 句子分割间隙阈值（毫秒） |
+
+### OCR（PaddleOCR）
+
+| 参数 | 默认值 | 描述 |
+|------|--------|------|
+| `OCR_MODEL_NAME` | `PP-OCRv5_mobile` | OCR模型 |
+| `OCR_LANG` | `ch` | OCR语言 |
+| `OCR_USE_GPU` | `True` | OCR使用GPU |
+| `OCR_MIN_CONFIDENCE` | `0.6` | 最小置信度阈值 |
+| `OCR_TIMEOUT_S` | `60` | OCR子进程超时 |
+| `OCR_RICH_TEXT_MIN_LINES` | `3` | 富文本检测最小行数 |
+
+### 帧采样
+
+| 参数 | 默认值 | 描述 |
+|------|--------|------|
+| `SENTENCE_END_OFFSET_MS` | `200` | 句子结束前偏移（毫秒） |
+| `LONG_PAUSE_THRESHOLD_MS` | `800` | 长暂停检测阈值（毫秒） |
+| `FALLBACK_FPS_FLOOR` | `0.2` | 静默段后备帧率 |
+| `FRAME_MAX_DIM` | `768` | 最大帧尺寸（像素） |
+| `FRAME_QUALITY` | `75` | JPEG质量 |
+| `FRAME_SIMILARITY_THRESHOLD` | `0.90` | 帧相似度阈值 |
+
+### VLM / LLM
+
+| 参数 | 默认值 | 描述 |
+|------|--------|------|
+| `VLM_MAX_TOKENS` | `512` | VLM最大输出tokens |
+| `VLM_TEMPERATURE` | `0.1` | VLM温度 |
+| `VLM_CALL_TIMEOUT_S` | `120` | VLM HTTP调用超时 |
+| `LLM_CALL_TIMEOUT_S` | `60` | LLM融合/查询超时 |
+| `LLM_MAX_TOKENS_FUSION` | `512` | LLM融合最大tokens |
+| `LLM_TEMPERATURE_FUSION` | `0.2` | LLM融合温度 |
+
+### 重试配置
+
+| 参数 | 默认值 | 描述 |
+|------|--------|------|
+| `RETRY_MAX_ATTEMPTS` | `4` | 最大重试次数 |
+| `RETRY_BASE_DELAY_S` | `2.0` | 基础重试延迟（秒） |
+| `RETRY_MAX_DELAY_S` | `30.0` | 最大重试延迟（秒） |
+| `RETRY_JITTER_FACTOR` | `0.25` | 重试抖动因子 |
+
+### 数据库与嵌入
+
+| 参数 | 默认值 | 描述 |
+|------|--------|------|
+| `DB_DIR` | `./video_db` | 数据库存储目录 |
+| `CHROMA_COLLECTION` | `segments` | ChromaDB集合名称 |
+| `EMBEDDING_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | 嵌入模型 |
+| `FUSION_SEGMENT_SIZE` | `5` | 每批融合段数 |
+
+### 下载与FFmpeg
+
+| 参数 | 默认值 | 描述 |
+|------|--------|------|
+| `DOWNLOAD_MAX_DURATION_SEC` | `0` | 最大下载时长（0=无限制） |
+| `FFMPEG_TIMEOUT_S` | `300` | ffmpeg子进程超时 |
+| `FFMPEG_EXTRACTION_TIMEOUT_S` | `60` | 帧提取超时 |
 CLI参数覆盖（最高优先级）：
 
 ```bash
@@ -129,38 +199,36 @@ timeline.json  (结构化时间线)
 
 ## 超时配置
 
-超时参数在 `config.py` 中配置：
-
-| 参数 | 默认值 | 描述 |
-|------|--------|------|
-| `VLM_CALL_TIMEOUT_S` | 120 | VLM HTTP调用超时 |
-| `LLM_CALL_TIMEOUT_S` | 60 | LLM融合/查询超时 |
-| `OCR_TIMEOUT_S` | 60 | OCR子进程超时 |
-| `FFMPEG_TIMEOUT_S` | 300 | ffmpeg子进程超时 |
-| `FUNASR_TIMEOUT_S` | 0 | FunASR超时（0=无限制） |
-
+超时参数在 `config.py` 中配置（见上方配置部分）。
 ## 项目结构
 
 ```
 video_summarize/
-├── cli.py              # 交互式工作空间CLI
-├── pipeline.py         # 主处理管道
-├── query.py            # 独立查询界面
-├── config.py           # 配置
-├── downloader.py       # 视频下载(yt-dlp)
-├── retry.py            # 重试工具
+├── cli.py                    # 交互式工作空间CLI
+├── pipeline.py               # 主处理管道
+├── query.py                  # 独立查询界面
+├── config.py                 # 配置（所有可调参数）
+├── downloader.py             # 视频下载（yt-dlp）
+├── protocol.md               # 开发协议
+├── requirements.txt          # 依赖
 ├── core/
-│   ├── stt.py          # 语音转文字(FunASR)
-│   ├── frame_sampler.py # 自适应帧提取
-│   ├── vlm_analyser.py # 视觉分析
-│   ├── fusion.py       # 语音-视觉融合
-│   ├── database.py     # ChromaDB + 时间线
-│   └ ocr_worker.py   # OCR子进程
+│   ├── lang.py               # 语言检测
+│   ├── stt.py                # 语音转文字（FunASR）
+│   ├── fusion.py             # 语音-视觉融合
+│   ├── database.py           # ChromaDB + 时间线
+│   └── vision/
+│       ├── __init__.py       # 视觉模块初始化
+│       ├── frame_sampler.py  # 自适应帧提取
+│       ├── vlm_analyser.py   # VLM帧分析
+│       └ ocr_worker.py     # OCR子进程（PaddleOCR）
 ├── query/
-│   └ query_engine.py # RAG查询引擎
+│   ├── __init__.py           # 查询模块初始化
+│   └ query_engine.py       # RAG查询引擎
 ├── utils/
-│   └ retry.py        # 重试重导出
-└── video_db/           # 已处理项目存储
+│   ├── __init__.py           # 工具模块初始化
+│   ├── video.py              # 视频工具
+│   └ retry.py              # 重试工具
+└── video_db/                 # 已处理项目存储
 ```
 
 ## 故障排除

@@ -70,6 +70,13 @@ _spec.loader.exec_module(_qe_mod)
 QueryEngine = _qe_mod.QueryEngine
 _parse_timestamp = _qe_mod._parse_timestamp
 
+_cc_path = Path(__file__).parent / "query" / "crosscheck.py"
+_cc_spec = importlib.util.spec_from_file_location("query.crosscheck", _cc_path)
+_cc_mod  = importlib.util.module_from_spec(_cc_spec)
+sys.modules["query.crosscheck"] = _cc_mod
+_cc_spec.loader.exec_module(_cc_mod)
+crosscheck = _cc_mod.crosscheck
+
 
 def _is_video_source(s: str) -> bool:
     """Return True if s looks like something the pipeline can process."""
@@ -193,6 +200,7 @@ _HELP_PROJECT = """
   /transcript           full spoken transcript
   /at MM:SS [question]  what was on screen at this moment
   /knowledge <topic>    deep extraction on a topic
+  /crosscheck [n]       fact-check top N claims against the web (default 5)
   /open <name|#>        switch to another project
   /help                 show this help
   /back                 return to workspace
@@ -302,6 +310,17 @@ def _project_repl(db_path: Path, db_root: Path) -> bool:
             else:
                 print(f"\n[Extracting knowledge about '{rest}'...]\n")
                 print(engine.extract_knowledge(rest))
+
+        elif cmd == "/crosscheck":
+            try:
+                n = int(rest) if rest else 5
+                n = max(1, min(n, 10))
+            except ValueError:
+                print("  Usage: /crosscheck [n]  (n = number of claims, 1-10; default 5)")
+                print()
+                continue
+            print(f"\n[Crosschecking top {n} claims against the web...]\n")
+            print(crosscheck(engine, n))
 
         else:
             print("\n[Searching...]\n")

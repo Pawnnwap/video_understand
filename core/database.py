@@ -11,11 +11,18 @@ log = logging.getLogger(__name__)
 class LocalEmbeddingFunction:
     def __init__(self, model_name: str):
         import os
-        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+        saved = {}
+        for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+            if k in os.environ:
+                saved[k] = os.environ.pop(k)
         from sentence_transformers import SentenceTransformer
-        log.info(f"Loading embedding model (local): {model_name} ...")
-        self._model = SentenceTransformer(model_name, local_files_only=True)
+        log.info(f"Loading embedding model: {model_name} ...")
+        try:
+            self._model = SentenceTransformer(model_name)
+        finally:
+            os.environ.update(saved)
+        log.info(f"Embedding model ready: {model_name}")
 
     def name(self) -> str:
         return "local-sentence-transformer"

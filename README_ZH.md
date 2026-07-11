@@ -219,8 +219,8 @@ video_summarize/
 │   └── vision/
 │       ├── __init__.py       # 视觉模块初始化
 │       ├── frame_sampler.py  # 自适应帧提取
-│       ├── vlm_analyser.py   # VLM帧分析
-│       └ ocr_worker.py     # OCR子进程（PaddleOCR）
+│       ├── vlm_analyser.py   # VLM帧分析 + 内联 RapidOCR OCR
+│       └── opencode_vlm.py   # opencode serve 子进程 + HTTP 客户端封装
 ├── query/
 │   ├── __init__.py           # 查询模块初始化
 │   └ query_engine.py       # RAG查询引擎

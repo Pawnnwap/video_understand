@@ -1,6 +1,12 @@
 """query/query_engine.py
-Uses the VideoDatabase + local LLM to answer natural language questions
-about the video. All queries go through RAG over the vector store.
+Uses the VideoDatabase + opencode (pure text mode) to answer natural
+language questions about the video. All queries go through RAG over the
+vector store.
+
+The LLM object passed in must expose ``call_text(prompt, variant=None) -> str``
+(as provided by :class:`core.vision.opencode_vlm.OpencodeVLM`).  The opencode
+message endpoint has no ``system`` role, so the system prompt is prepended to
+each user payload instead.
 """
 
 from __future__ import annotations
@@ -24,13 +30,13 @@ SYSTEM_PROMPT = """\
 
 
 class QueryEngine:
-    """Wraps a VideoDatabase and a local LLM client to answer
+    """Wraps a VideoDatabase and an opencode text LLM to answer
     natural language questions about a processed video.
     """
 
-    def __init__(self, db, client, cfg):
+    def __init__(self, db, llm, cfg):
         self.db = db
-        self.client = client
+        self.llm = llm
         self.cfg = cfg
 
     # ──────────────────────────────────────────────────────────────────────
@@ -204,19 +210,11 @@ class QueryEngine:
     # ──────────────────────────────────────────────────────────────────────
 
     def _llm(self, prompt: str, max_tokens: int = 800) -> str:
-        _timeout = getattr(self.cfg, "LLM_CALL_TIMEOUT_S", 60)
+        _variant = getattr(self.cfg, "VLM_LLM_VARIANT", None)
 
         def _call():
-            return self.client.chat.completions.create(
-                model=self.cfg.LLM_MODEL,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=max_tokens,
-                temperature=0.3,
-                timeout=_timeout,
-            ).choices[0].message.content.strip()
+            payload = f"{SYSTEM_PROMPT}\n\n---\n\n{prompt}"
+            return self.llm.call_text(payload, variant=_variant)
 
         try:
             return retry_sync(_call, cfg=_QUERY_RETRY, label="query_llm")

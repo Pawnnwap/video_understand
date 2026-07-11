@@ -132,10 +132,13 @@ def _download(url: str, out_dir: Path, max_duration_sec: int = 0) -> Path:
     outtmpl = str(out_dir / "%(title).60s_%(id)s.%(ext)s")
 
     ydl_opts = {
-        # Best mp4 ≤720p; fallback to any best single-file format
+        # Prefer H.264 (avc1) video streams — ffmpeg decodes them natively and
+        # can extract JPEG frames cleanly; HEVC (hvc1) streams break ffmpeg's
+        # mjpeg encoder on Windows.  Fall back only if no avc1 stream exists.
         "format": (
-            "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
-            "/bestvideo[ext=mp4][height<=720]+bestaudio"
+            "bestvideo[vcodec^=avc][ext=mp4][height<=720]+bestaudio[ext=m4a]"
+            "/bestvideo[vcodec^=avc][ext=mp4][height<=720]+bestaudio"
+            "/bestvideo[vcodec^=avc][ext=mp4][height<=1080]+bestaudio[ext=m4a]"
             "/best[ext=mp4][height<=720]"
             "/best[height<=720]"
             "/best"

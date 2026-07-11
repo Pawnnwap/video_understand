@@ -5,6 +5,8 @@ import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from tqdm import tqdm
+
 from utils.retry import RetryConfig, retry_sync
 
 _FUSION_RETRY = RetryConfig(max_attempts=4, base_delay_s=2.0, max_delay_s=20.0)
@@ -94,15 +96,16 @@ def _build_fusion_prompt(seg: FusedSegment, lang: str = "zh") -> str:
     )
 
 
-def fuse(sentences, analyses, client, cfg, lang: str = "zh") -> list[FusedSegment]:
+def fuse(sentences, analyses, llm, cfg, lang: str = "zh") -> list[FusedSegment]:
     analyses_list = list(analyses)
     n = len(sentences)
     chunk_size = cfg.FUSION_SEGMENT_SIZE
     if chunk_size < 1:
         raise ValueError(f"FUSION_SEGMENT_SIZE must be >= 1, got {chunk_size}")
     fused_segments: list[FusedSegment] = []
+    total_chunks = max(1, (n + chunk_size - 1) // chunk_size)
     log.info(f"Fusing {n} sentences in chunks of {chunk_size} (lang={lang}) ...")
-    for chunk_start in range(0, n, chunk_size):
+    for chunk_start in tqdm(range(0, n, chunk_size), total=total_chunks, desc="Phase 3 fuse", unit="seg", leave=True):
         chunk = sentences[chunk_start: chunk_start + chunk_size]
         sid = chunk_start // chunk_size
         combined_text = " ".join(s.text for s in chunk)
@@ -131,16 +134,12 @@ def fuse(sentences, analyses, client, cfg, lang: str = "zh") -> list[FusedSegmen
             seg.is_slide_change = best_frame.visual_delta in ("slide_change", "major_change")
         try:
             prompt = _build_fusion_prompt(seg, lang)
-            _timeout = getattr(cfg, "LLM_CALL_TIMEOUT_S", 60)
 
             def _call_llm():
-                return client.chat.completions.create(
-                    model=cfg.LLM_MODEL,
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=cfg.LLM_MAX_TOKENS_FUSION,
-                    temperature=cfg.LLM_TEMPERATURE_FUSION,
-                    timeout=_timeout,
-                ).choices[0].message.content.strip()
+                return llm.call_text(
+                    prompt,
+                    variant=getattr(cfg, "VLM_LLM_VARIANT", None),
+                )
             seg.fused_summary = retry_sync(_call_llm, cfg=_FUSION_RETRY, label=f"fusion_llm_seg{sid}")
         except Exception as e:
             log.warning(f"Fusion LLM call failed for segment {sid} after retries: {e}")

@@ -15,5 +15,8 @@ test_*.py
 .job_store
 *.isorted
 *.bak
-*.txt
+*.pid
 experience.md
+*.out
+*.err
+tool-output/

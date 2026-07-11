@@ -1,26 +1,62 @@
 """config.py — all tunable parameters in one place.
 Edit this file to match your local setup.
 
+Three model backends are used:
+  • VLM  (vision)  — via the local opencode server calling the built-in free
+                     vision model "opencode/mimo-v2.5-free".  No base_url
+                     or API key — opencode hosts the model internally.
+  • LLM  (text)    — LOCAL, via LM Studio (e.g. qwen3.5-4b).  Used for phase-3
+                     fusion text summaries and the query engine.
+  • OCR            — LOCAL PaddleOCR (subprocess), unchanged.
+
 Environment variables take precedence over defaults:
-  LM_STUDIO_BASE_URL, LM_STUDIO_API_KEY, VLM_MODEL, LLM_MODEL
+  VLM:   VLM_MODEL  (provider/model id; default opencode/mimo-v2.5-free)
+  LLM:   LM_STUDIO_BASE_URL, LM_STUDIO_API_KEY, LLM_MODEL
 """
 
 import os
 from pathlib import Path
 
-LM_STUDIO_BASE_URL = os.environ.get("LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
-LM_STUDIO_API_KEY = os.environ.get("LM_STUDIO_API_KEY", "lm-studio")
+# ── VLM (vision track) — opencode local server (free vision models) ──────────
+# No endpoint or key: opencode hosts the model internally.  Set VLM_MODEL to
+# a provider/model id that opencode exposes (see `opencode models opencode`).
+VLM_MODEL = os.environ.get("VLM_MODEL", "opencode/mimo-v2.5-free")
+# Optional reasoning variant for mimo (omit for default): low|medium|high|max
+VLM_VARIANT = os.environ.get("VLM_VARIANT", "") or None
+# Fixed port for the spawned opencode server (0 = random).
+OPENCODE_SERVER_PORT = int(os.environ.get("OPENCODE_SERVER_PORT", "0") or 0)
 
-VLM_MODEL = os.environ.get("VLM_MODEL", "qwen3.5-4b")
+# ── Phase-3 text LLM ("pure mode" — same opencode server, no image) ────────
+# The fusion stage also runs through opencode, sending text-only messages
+# (no file attachment).  Defaults to the same opencode model as the vision
+# track; override VLM_LLM_MODEL / VLM_LLM_VARIANT to use a different model
+# (e.g. a smaller reasoning variant) for summarisation.
+VLM_LLM_MODEL = os.environ.get("VLM_LLM_MODEL", VLM_MODEL)
+VLM_LLM_VARIANT = os.environ.get("VLM_LLM_VARIANT", "") or None
+
+# ── LLM (text track) — local, via LM Studio ─────────────────────────────────
+LLM_BASE_URL = os.environ.get("LM_STUDIO_BASE_URL", "http://127.0.0.1:1235/v1")
+LLM_API_KEY = os.environ.get("LM_STUDIO_API_KEY", "lm-studio")
 LLM_MODEL = os.environ.get("LLM_MODEL", "qwen3.5-4b")
 
+# Legacy aliases (kept for any caller still referencing LM_STUDIO_BASE_URL /
+# LM_STUDIO_API_KEY directly — they now map to the local LLM endpoint).
+LM_STUDIO_BASE_URL = LLM_BASE_URL
+LM_STUDIO_API_KEY = LLM_API_KEY
 
-FUNASR_MODEL = "paraformer-zh"
-FUNASR_VAD_MODEL = "fsmn-vad"
-FUNASR_PUNC_MODEL = "ct-punc"
-FUNASR_DEVICE = "cuda"
-FUNASR_LANGUAGE = "zh"
-STT_SENTENCE_SPLIT_GAP_MS = 500
+
+# FunASR model ids — must be the full ModelScope ids (cached under
+# ~/.cache/modelscope/hub/models/<id>).  The short aliases ("paraformer-zh" etc.)
+# are not registered by funasr >= 1.3, so the full paths are required.
+FUNASR_MODEL = os.environ.get(
+    "FUNASR_MODEL",
+    "iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+)
+FUNASR_VAD_MODEL = os.environ.get("FUNASR_VAD_MODEL", "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch")
+FUNASR_PUNC_MODEL = os.environ.get("FUNASR_PUNC_MODEL", "iic/punc_ct-transformer_cn-en-common-vocab471067-large")
+FUNASR_DEVICE = os.environ.get("FUNASR_DEVICE", "cuda")
+FUNASR_LANGUAGE = os.environ.get("FUNASR_LANGUAGE", "zh")
+STT_SENTENCE_SPLIT_GAP_MS = int(os.environ.get("STT_SENTENCE_SPLIT_GAP_MS", "500"))
 
 
 OCR_MODEL_NAME = "PP-OCRv5_mobile"

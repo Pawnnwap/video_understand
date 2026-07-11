@@ -12,6 +12,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from tqdm import tqdm
+
 from utils.video import get_video_duration
 
 log = logging.getLogger(__name__)
@@ -91,13 +93,14 @@ def extract_frames(
     to_extract = [req for req in schedule if not _frame_path(frames_dir, req.timestamp_ms).exists()]
 
     if to_extract:
-        log.info(f"Extracting {len(to_extract)} new frames ...")
+        log.info(f"Extracting {len(to_extract)} new frames (of {len(schedule)} scheduled) ...")
         duration_s = get_video_duration(video_path, getattr(cfg, "FFMPEG_TIMEOUT_S", 300))
         failed = 0
-        for req in to_extract:
+        for req in tqdm(to_extract, desc="Phase 2a extract", unit="frame", leave=True):
             success = _extract_one_frame(video_path, req, frames_dir, cfg, duration_s)
             if not success:
                 failed += 1
+
         if failed:
             log.warning(f"Failed to extract {failed}/{len(to_extract)} frames")
     else:

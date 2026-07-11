@@ -219,8 +219,8 @@ video_summarize/
 │   └── vision/
 │       ├── __init__.py       # Vision module init
 │       ├── frame_sampler.py  # Adaptive frame extraction
-│       ├── vlm_analyser.py   # VLM frame analysis
-│       └── ocr_worker.py     # OCR subprocess (PaddleOCR)
+│       ├── vlm_analyser.py   # VLM frame analysis + inline RapidOCR OCR
+│       └── opencode_vlm.py   # opencode serve subprocess + HTTP client helper
 ├── query/
 │   ├── __init__.py           # Query module init
 │   └ query_engine.py       # RAG query engine

@@ -40,7 +40,6 @@ import sys
 import config as cfg
 from core.database import VideoDatabase
 from downloader import _expand_short_code, is_url
-from openai import OpenAI
 
 # Force UTF-8 on Windows consoles so CJK / box-drawing chars render correctly
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
@@ -87,10 +86,18 @@ def _is_video_source(s: str) -> bool:
 #  Helpers
 # ---------------------------------------------------------------------------
 
-def _build_client(base_url=None, api_key=None):
-    return OpenAI(
-        base_url=base_url or cfg.LM_STUDIO_BASE_URL,
-        api_key=api_key or cfg.LM_STUDIO_API_KEY,
+def _build_llm():
+    """Build the opencode text-LLM (pure mode) for the query engine.
+
+    Spawns a local `opencode serve` subprocess and reuses its single session
+    for every ``call_text`` invocation.  Caller is responsible for closing it
+    (``llm.close()``) on shutdown.
+    """
+    from core.vision.opencode_vlm import OpencodeVLM
+    return OpencodeVLM(
+        model=getattr(cfg, "VLM_LLM_MODEL", cfg.VLM_MODEL),
+        port=cfg.OPENCODE_SERVER_PORT,
+        variant=getattr(cfg, "VLM_LLM_VARIANT", None),
     )
 
 
@@ -157,7 +164,11 @@ def _resolve_project(token: str, projects: list):
 
 
 def _load_project(db_path: Path):
-    """Load DB + engine. Returns (db, engine) or None on failure."""
+    """Load DB + engine. Returns (db, engine, llm) or None on failure.
+
+    The ``llm`` is an ``OpencodeVLM`` instance that must be closed by the
+    caller via ``llm.close()`` once the REPL exits.
+    """
     try:
         db = VideoDatabase.load(str(db_path), cfg)
     except Exception as e:
@@ -166,23 +177,24 @@ def _load_project(db_path: Path):
     if db.count() == 0:
         print("  Database is empty -- run 'process' first.")
         return None
-    engine = QueryEngine(db, _build_client(), cfg)
-    return db, engine
+    llm = _build_llm()
+    engine = QueryEngine(db, llm, cfg)
+    return db, engine, llm
 
 
-def _run_pipeline(source: str, base_url=None, api_key=None, vlm_model=None, llm_model=None) -> bool:
+def _run_pipeline(source: str, vlm_model=None, llm_model=None, vlm_variant=None, opencode_port=None) -> bool:
     """Run pipeline.py on source, inheriting stdio for live output."""
     print(f"\n  Launching pipeline for: {source}")
     print("  (runs in the foreground -- please wait)\n")
     cmd = [sys.executable, str(Path(__file__).parent / "pipeline.py"), source]
-    if base_url:
-        cmd.extend(["--base-url", base_url])
-    if api_key:
-        cmd.extend(["--api-key", api_key])
     if vlm_model:
         cmd.extend(["--vlm-model", vlm_model])
     if llm_model:
         cmd.extend(["--llm-model", llm_model])
+    if vlm_variant:
+        cmd.extend(["--vlm-variant", vlm_variant])
+    if opencode_port is not None:
+        cmd.extend(["--opencode-port", str(opencode_port)])
     r = subprocess.run(cmd)
     return r.returncode == 0
 
@@ -217,7 +229,7 @@ def _project_repl(db_path: Path, db_root: Path) -> bool:
     if result is None:
         return True
 
-    db, engine = result
+    db, engine, llm = result
     name = db_path.name
     short = name[:52] + "..." if len(name) > 55 else name
 
@@ -228,105 +240,111 @@ def _project_repl(db_path: Path, db_root: Path) -> bool:
     print(_HELP_PROJECT)
     print()
 
-    while True:
-        try:
-            raw = input(f"[{short[:35]}] > ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return False
-
-        if not raw:
-            continue
-
-        parts = raw.split(None, 1)
-        cmd = parts[0].lower()
-        rest = parts[1].strip() if len(parts) > 1 else ""
-
-        # -- navigation --
-        if cmd in ("/quit", "/exit", "quit", "exit"):
-            return False
-
-        if cmd in ("/back", "/workspace", "back"):
-            return True
-
-        if cmd == "/help":
-            print(_HELP_PROJECT)
-
-        elif cmd == "/open":
-            if not rest:
-                print("  Usage: /open <name or number>")
-                continue
-            projects = _list_projects(db_root)
-            target = _resolve_project(rest, projects)
-            if target:
-                keep_going = _project_repl(target, db_root)
-                if not keep_going:
-                    return False
-                return True  # back to workspace after sub-project
-
-        # -- query commands --
-        elif cmd == "/summary":
-            print("\n[Generating summary...]\n")
-            print(engine.summarize("comprehensive"))
-
-        elif cmd == "/headline":
-            print("\n[Generating headline...]\n")
-            print(engine.summarize("headline"))
-
-        elif cmd == "/brief":
-            print("\n[Generating brief overview...]\n")
-            print(engine.summarize("brief"))
-
-        elif cmd == "/outline":
-            print("\n[Building outline...]\n")
-            print(engine.get_topic_outline())
-
-        elif cmd == "/slides":
-            slides = db.get_slide_index()
-            if slides:
-                print(f"\n  {len(slides)} slide changes:\n")
-                for s in slides:
-                    print(f"  {s['timestamp']}  {s.get('slide_title') or '(no title)'}")
-            else:
-                print("  No slide changes detected.")
-
-        elif cmd == "/transcript":
-            print()
-            print(db.get_full_transcript())
-
-        elif cmd == "/at":
-            sub = rest.split(None, 1)
-            if not sub:
-                print("  Usage: /at MM:SS [question]")
-            else:
-                ts_ms = _parse_timestamp(sub[0])
-                q = sub[1] if len(sub) > 1 else "这个时刻屏幕上显示的是什么？"
-                print(f"\n[Querying at {sub[0]}...]\n")
-                print(engine.query_at_time(ts_ms, q))
-
-        elif cmd == "/knowledge":
-            if not rest:
-                print("  Usage: /knowledge <topic>")
-            else:
-                print(f"\n[Extracting knowledge about '{rest}'...]\n")
-                print(engine.extract_knowledge(rest))
-
-        elif cmd == "/crosscheck":
+    try:
+        while True:
             try:
-                n = int(rest) if rest else 5
-                n = max(1, min(n, 10))
-            except ValueError:
-                print("  Usage: /crosscheck [n]  (n = number of claims, 1-10; default 5)")
+                raw = input(f"[{short[:35]}] > ").strip()
+            except (EOFError, KeyboardInterrupt):
                 print()
+                return False
+
+            if not raw:
                 continue
-            print(f"\n[Crosschecking top {n} claims against the web...]\n")
-            print(crosscheck(engine, n))
 
-        else:
-            print("\n[Searching...]\n")
-            print(engine.ask(raw))
+            parts = raw.split(None, 1)
+            cmd = parts[0].lower()
+            rest = parts[1].strip() if len(parts) > 1 else ""
 
-        print()
+            # -- navigation --
+            if cmd in ("/quit", "/exit", "quit", "exit"):
+                return False
+
+            if cmd in ("/back", "/workspace", "back"):
+                return True
+
+            if cmd == "/help":
+                print(_HELP_PROJECT)
+
+            elif cmd == "/open":
+                if not rest:
+                    print("  Usage: /open <name or number>")
+                    continue
+                projects = _list_projects(db_root)
+                target = _resolve_project(rest, projects)
+                if target:
+                    keep_going = _project_repl(target, db_root)
+                    if not keep_going:
+                        return False
+                    return True  # back to workspace after sub-project
+
+            # -- query commands --
+            elif cmd == "/summary":
+                print("\n[Generating summary...]\n")
+                print(engine.summarize("comprehensive"))
+
+            elif cmd == "/headline":
+                print("\n[Generating headline...]\n")
+                print(engine.summarize("headline"))
+
+            elif cmd == "/brief":
+                print("\n[Generating brief overview...]\n")
+                print(engine.summarize("brief"))
+
+            elif cmd == "/outline":
+                print("\n[Building outline...]\n")
+                print(engine.get_topic_outline())
+
+            elif cmd == "/slides":
+                slides = db.get_slide_index()
+                if slides:
+                    print(f"\n  {len(slides)} slide changes:\n")
+                    for s in slides:
+                        print(f"  {s['timestamp']}  {s.get('slide_title') or '(no title)'}")
+                else:
+                    print("  No slide changes detected.")
+
+            elif cmd == "/transcript":
+                print()
+                print(db.get_full_transcript())
+
+            elif cmd == "/at":
+                sub = rest.split(None, 1)
+                if not sub:
+                    print("  Usage: /at MM:SS [question]")
+                else:
+                    ts_ms = _parse_timestamp(sub[0])
+                    q = sub[1] if len(sub) > 1 else "这个时刻屏幕上显示的是什么？"
+                    print(f"\n[Querying at {sub[0]}...]\n")
+                    print(engine.query_at_time(ts_ms, q))
+
+            elif cmd == "/knowledge":
+                if not rest:
+                    print("  Usage: /knowledge <topic>")
+                else:
+                    print(f"\n[Extracting knowledge about '{rest}'...]\n")
+                    print(engine.extract_knowledge(rest))
+
+            elif cmd == "/crosscheck":
+                try:
+                    n = int(rest) if rest else 5
+                    n = max(1, min(n, 10))
+                except ValueError:
+                    print("  Usage: /crosscheck [n]  (n = number of claims, 1-10; default 5)")
+                    print()
+                    continue
+                print(f"\n[Crosschecking top {n} claims against the web...]\n")
+                print(crosscheck(engine, n))
+
+            else:
+                print("\n[Searching...]\n")
+                print(engine.ask(raw))
+
+            print()
+    finally:
+        try:
+            llm.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -443,18 +461,26 @@ def _workspace_repl(db_root: Path, open_immediately=None):
 def main():
     parser = argparse.ArgumentParser(description="Video Understanding CLI")
     parser.add_argument("source", nargs="?", help="Video path, URL, or BV code")
-    parser.add_argument("--base-url", help="LM Studio base URL")
-    parser.add_argument("--api-key", help="API key")
-    parser.add_argument("--vlm-model", help="Vision model name")
+    parser.add_argument("--llm-base-url", help="LM Studio base URL for the local text LLM")
+    parser.add_argument("--llm-api-key", help="LM Studio API key")
+    parser.add_argument("--vlm-model", help="opencode vision model id (default opencode/mimo-v2.5-free)")
+    parser.add_argument("--vlm-variant", help="opencode model variant (low|medium|high|max)")
+    parser.add_argument("--opencode-port", type=int, help="Fixed port for the opencode server (0 = random)")
     parser.add_argument("--llm-model", help="Language model name")
     args = parser.parse_args()
 
-    if args.base_url:
-        cfg.LM_STUDIO_BASE_URL = args.base_url
-    if args.api_key:
-        cfg.LM_STUDIO_API_KEY = args.api_key
+    if args.llm_base_url:
+        cfg.LLM_BASE_URL = args.llm_base_url
+        cfg.LM_STUDIO_BASE_URL = args.llm_base_url
+    if args.llm_api_key:
+        cfg.LLM_API_KEY = args.llm_api_key
+        cfg.LM_STUDIO_API_KEY = args.llm_api_key
     if args.vlm_model:
         cfg.VLM_MODEL = args.vlm_model
+    if args.vlm_variant:
+        cfg.VLM_VARIANT = args.vlm_variant
+    if args.opencode_port is not None:
+        cfg.OPENCODE_SERVER_PORT = args.opencode_port
     if args.llm_model:
         cfg.LLM_MODEL = args.llm_model
 
@@ -474,7 +500,10 @@ def main():
             return
 
         print(f"\n  '{arg}' not found as an existing project -- running pipeline first...")
-        ok = _run_pipeline(arg, args.base_url, args.api_key, args.vlm_model, args.llm_model)
+        ok = _run_pipeline(
+            arg, args.vlm_model, args.llm_model,
+            args.vlm_variant, args.opencode_port,
+        )
         if ok:
             projects = _list_projects(db_root)
             if projects:

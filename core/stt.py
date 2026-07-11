@@ -210,6 +210,7 @@ def _load_funasr_model(cfg):
             vad_model=cfg.FUNASR_VAD_MODEL,
             punc_model=cfg.FUNASR_PUNC_MODEL,
             device=dev,
+            disable_update=True,
         )
 
     try:

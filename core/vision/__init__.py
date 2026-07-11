@@ -3,8 +3,9 @@
 Modules
 -------
 frame_sampler   Build STT-driven frame schedule and extract frames via ffmpeg.
-vlm_analyser    Analyse frames with VLM (scene / slide / diagram / delta) + OCR.
-ocr_worker      Standalone subprocess runner for PaddleOCR (avoids CUDA conflict).
+vlm_analyser    Analyse frames with VLM (scene / slide / diagram / delta) + OCR
+                (Track A: RapidOCR ONNX inline; Track B: opencode VLM server).
+opencode_vlm    OpencodeVLM helper — spawns opencode serve + drives HTTP API.
 """
 
 from core.vision.frame_sampler import (

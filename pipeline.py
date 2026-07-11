@@ -13,24 +13,35 @@ from __future__ import annotations
 import argparse
 import logging
 
-# Block all HuggingFace network calls — everything must run fully locally.
+# Local tracks (STT, OCR, embeddings) run fully offline — block HF network
+# calls so they never try to fetch models on demand.  The VLM track is REMOTE
+# (OpenCode Zen) and is unaffected by these flags.
 import os
 import sys
 from pathlib import Path
 
 import config as cfg
+from utils.logging_setup import setup_logging
 from utils.video import get_video_duration
 
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_DATASETS_OFFLINE"] = "1"
+# ModelScope (FunASR weights) — use the local cache only, never hit the network.
+os.environ["MODELSCOPE_OFFLINE"] = "1"
+os.environ["MODELSCOPE_DOMAIN_NAME"] = "www.modelscope.cn"
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
-    datefmt="%H:%M:%S",
-)
+def _log_file_for(video_path: str, db_root: str) -> str | None:
+    try:
+        stem = Path(video_path).stem
+        d = Path(db_root) / stem
+        d.mkdir(parents=True, exist_ok=True)
+        return str(d / "pipeline.log")
+    except Exception:
+        return None
+
+
 log = logging.getLogger("pipeline")
 
 
@@ -42,10 +53,29 @@ def make_db_dir(video_path: str, db_root: str) -> Path:
     return db_dir
 
 
-def build_client():
-    """Instantiate the OpenAI-compatible client pointing at LM Studio."""
+def build_vlm():
+    """Instantiate the opencode-backed VLM used for the vision track AND
+    the Phase-3 text-LLM ("pure mode" — text-only, no image).
+
+    Spawns a persistent ``opencode serve`` subprocess.  Vision calls reuse
+    one session; text-LLM calls create a fresh session per message.  No
+    base_url / API key needed — opencode's built-in provider hosts the free
+    models.
+    """
+    from core.vision.opencode_vlm import OpencodeVLM
+    return OpencodeVLM(
+        model=cfg.VLM_MODEL,
+        port=getattr(cfg, "OPENCODE_SERVER_PORT", 0) or 0,
+        variant=getattr(cfg, "VLM_VARIANT", None),
+        text_model=getattr(cfg, "VLM_LLM_MODEL", cfg.VLM_MODEL),
+        text_variant=getattr(cfg, "VLM_LLM_VARIANT", None),
+    )
+
+
+def build_llm_client():
+    """Instantiate the OpenAI-compatible client for the LOCAL text LLM (LM Studio)."""
     from openai import OpenAI
-    return OpenAI(base_url=cfg.LM_STUDIO_BASE_URL, api_key=cfg.LM_STUDIO_API_KEY)
+    return OpenAI(base_url=cfg.LLM_BASE_URL, api_key=cfg.LLM_API_KEY)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -54,6 +84,7 @@ def build_client():
 
 def run_pipeline(video_path: str, force_reprocess: bool = False):
 
+    setup_logging(level=logging.INFO, log_file=_log_file_for(video_path, cfg.DB_DIR))
     log.info(f"{'=' * 60}")
     log.info("  Video Understanding Pipeline")
     log.info(f"  Input : {video_path}")
@@ -81,7 +112,10 @@ def run_pipeline(video_path: str, force_reprocess: bool = False):
         sys.exit(1)
 
     db_dir = make_db_dir(video_path, cfg.DB_DIR)
-    client = build_client()
+    vlm = build_vlm()
+    log.info(f"VLM  (opencode): model={cfg.VLM_MODEL}  variant={getattr(cfg, 'VLM_VARIANT', None)}")
+    log.info(f"LLM  (opencode pure mode for Phase-3 fusion): model={getattr(cfg, 'VLM_LLM_MODEL', cfg.VLM_MODEL)}  variant={getattr(cfg, 'VLM_LLM_VARIANT', None)}")
+    log.info(f"Query LLM (local LM Studio): {cfg.LLM_BASE_URL}  model={cfg.LLM_MODEL}")
     duration = get_video_duration(video_path)
     log.info(f"Video duration: {duration:.1f}s  |  Output dir: {db_dir}")
 
@@ -114,22 +148,27 @@ def run_pipeline(video_path: str, force_reprocess: bool = False):
     frame_results = extract_frames(video_path, schedule, db_dir, cfg)
     log.info(f"Frames ready: {len(frame_results)}")
 
-    # ── PHASE 2b : VLM analysis ──────────────────────────────────────────
-    log.info("\n── Phase 2b: VLM Frame Analysis ─────────────────────────")
+# ── PHASE 2b : VLM analysis ──────────────────────────────────────────
+    log.info("\n── Phase 2b: VLM Frame Analysis ─────────────────────────────────")
     from core.vision.vlm_analyser import analyse_all_frames
 
-    analyses = analyse_all_frames(frame_results, client, cfg, db_dir, lang=lang)
+    # vlm stays alive through Phase 3 (also used for the fusion text-LLM).
+    try:
 
-    # ── PHASE 3 : Temporal fusion ────────────────────────────────────────
-    log.info("\n── Phase 3: Temporal Fusion ─────────────────────────────")
-    from core.fusion import fuse, load_fused, save_fused
+        analyses = analyse_all_frames(frame_results, vlm, cfg, db_dir, lang=lang)
 
-    fused = load_fused(db_dir) if not force_reprocess else None
-    if fused:
-        log.info(f"Loaded cached fusion ({len(fused)} segments).")
-    else:
-        fused = fuse(sentences, analyses, client, cfg, lang=lang)
-        save_fused(fused, db_dir)
+        # ── PHASE 3 : Temporal fusion ────────────────────────────────────
+        log.info("\n── Phase 3: Temporal Fusion (opencode pure mode) ───────────────")
+        from core.fusion import fuse, load_fused, save_fused
+
+        fused = load_fused(db_dir) if not force_reprocess else None
+        if fused:
+            log.info(f"Loaded cached fusion ({len(fused)} segments).")
+        else:
+            fused = fuse(sentences, analyses, vlm, cfg, lang=lang)
+            save_fused(fused, db_dir)
+    finally:
+        vlm.close()
 
     # ── PHASE 4 : Database ───────────────────────────────────────────────
     log.info("\n── Phase 4: Building Database ───────────────────────────")
@@ -159,18 +198,26 @@ def main():
     parser.add_argument("video", help="Local video path OR YouTube/Bilibili URL")
     parser.add_argument("--force", action="store_true", help="Force full reprocessing")
     parser.add_argument("--query", action="store_true", help="Launch interactive query REPL after processing")
-    parser.add_argument("--base-url", help="LM Studio base URL")
-    parser.add_argument("--api-key", help="API key")
-    parser.add_argument("--vlm-model", help="Vision model name")
+    parser.add_argument("--vlm-model", help="opencode vision model id (default opencode/mimo-v2.5-free)")
+    parser.add_argument("--vlm-variant", help="opencode model variant (low|medium|high|max)")
+    parser.add_argument("--opencode-port", type=int, help="Fixed port for the opencode server (0 = random)")
+    parser.add_argument("--llm-base-url", help="LM Studio base URL for the local text LLM")
+    parser.add_argument("--llm-api-key", help="LM Studio API key")
     parser.add_argument("--llm-model", help="Language model name")
     args = parser.parse_args()
 
-    if args.base_url:
-        cfg.LM_STUDIO_BASE_URL = args.base_url
-    if args.api_key:
-        cfg.LM_STUDIO_API_KEY = args.api_key
     if args.vlm_model:
         cfg.VLM_MODEL = args.vlm_model
+    if args.vlm_variant:
+        cfg.VLM_VARIANT = args.vlm_variant
+    if args.opencode_port is not None:
+        cfg.OPENCODE_SERVER_PORT = args.opencode_port
+    if args.llm_base_url:
+        cfg.LLM_BASE_URL = args.llm_base_url
+        cfg.LM_STUDIO_BASE_URL = args.llm_base_url
+    if args.llm_api_key:
+        cfg.LLM_API_KEY = args.llm_api_key
+        cfg.LM_STUDIO_API_KEY = args.llm_api_key
     if args.llm_model:
         cfg.LLM_MODEL = args.llm_model
 
@@ -178,8 +225,8 @@ def main():
 
     if args.query:
         from query.query_engine import QueryEngine
-        client = build_client()
-        engine = QueryEngine(db, client, cfg)
+        llm_client = build_llm_client()
+        engine = QueryEngine(db, llm_client, cfg)
         engine.repl()
 
 

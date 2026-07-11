@@ -45,15 +45,27 @@ LM_STUDIO_BASE_URL = LLM_BASE_URL
 LM_STUDIO_API_KEY = LLM_API_KEY
 
 
-# FunASR model ids — must be the full ModelScope ids (cached under
-# ~/.cache/modelscope/hub/models/<id>).  The short aliases ("paraformer-zh" etc.)
-# are not registered by funasr >= 1.3, so the full paths are required.
-FUNASR_MODEL = os.environ.get(
+# FunASR model paths — bundled under ./models/iic/ so the project is
+# self-contained and works fully offline (no ModelScope network fetch).
+# Overridable via env var (accepts either a local path or an iic/<id>).
+_FUNASR_LOCAL_ROOT = str(Path(__file__).parent / "models" / "iic")
+
+
+def _funasr_path(env_key: str, default_name: str) -> str:
+    val = os.environ.get(env_key, "")
+    if val and (Path(val).is_absolute() or "/" in val or os.sep in val):
+        return val
+    name = val or default_name
+    local = Path(_FUNASR_LOCAL_ROOT) / name
+    return str(local) if (local / "model.pt").exists() else name
+
+
+FUNASR_MODEL = _funasr_path(
     "FUNASR_MODEL",
-    "iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+    "speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
 )
-FUNASR_VAD_MODEL = os.environ.get("FUNASR_VAD_MODEL", "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch")
-FUNASR_PUNC_MODEL = os.environ.get("FUNASR_PUNC_MODEL", "iic/punc_ct-transformer_cn-en-common-vocab471067-large")
+FUNASR_VAD_MODEL = _funasr_path("FUNASR_VAD_MODEL", "speech_fsmn_vad_zh-cn-16k-common-pytorch")
+FUNASR_PUNC_MODEL = _funasr_path("FUNASR_PUNC_MODEL", "punc_ct-transformer_cn-en-common-vocab471067-large")
 FUNASR_DEVICE = os.environ.get("FUNASR_DEVICE", "cuda")
 FUNASR_LANGUAGE = os.environ.get("FUNASR_LANGUAGE", "zh")
 STT_SENTENCE_SPLIT_GAP_MS = int(os.environ.get("STT_SENTENCE_SPLIT_GAP_MS", "500"))
@@ -108,4 +120,4 @@ DOWNLOAD_MAX_DURATION_SEC = 0
 
 DB_DIR = str((Path(__file__).parent / "video_db").resolve())
 CHROMA_COLLECTION = "segments"
-EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "models/paraphrase-multilingual-MiniLM-L12-v2")

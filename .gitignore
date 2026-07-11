@@ -3,6 +3,7 @@ __pycache__/
 *.log
 *.json
 *.txt
+models/
 video_db/
 downloads/
 .vscode/

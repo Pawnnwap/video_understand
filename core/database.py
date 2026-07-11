@@ -11,18 +11,46 @@ log = logging.getLogger(__name__)
 class LocalEmbeddingFunction:
     def __init__(self, model_name: str):
         import os
-        os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
-        saved = {}
-        for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
-            if k in os.environ:
-                saved[k] = os.environ.pop(k)
+        local_dir = self._resolve_local(model_name)
         from sentence_transformers import SentenceTransformer
-        log.info(f"Loading embedding model: {model_name} ...")
-        try:
-            self._model = SentenceTransformer(model_name)
-        finally:
-            os.environ.update(saved)
-        log.info(f"Embedding model ready: {model_name}")
+        log.info(f"Loading embedding model: {local_dir or model_name} ...")
+        if local_dir:
+            saved = {}
+            for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_ENDPOINT"):
+                if k in os.environ:
+                    saved[k] = os.environ.pop(k)
+            saved.setdefault("HF_HUB_OFFLINE", None)
+            saved.setdefault("TRANSFORMERS_OFFLINE", None)
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            try:
+                self._model = SentenceTransformer(local_dir)
+            finally:
+                for k, v in saved.items():
+                    if v is None: os.environ.pop(k, None)
+                    else: os.environ[k] = v
+        else:
+            os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+            saved = {}
+            for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+                if k in os.environ:
+                    saved[k] = os.environ.pop(k)
+            try:
+                self._model = SentenceTransformer(model_name)
+            finally:
+                os.environ.update(saved)
+        log.info(f"Embedding model ready: {local_dir or model_name}")
+
+    @staticmethod
+    def _resolve_local(model_name: str):
+        """Return a usable local directory for the model, else None."""
+        from pathlib import Path
+        cand = Path(model_name)
+        if not cand.is_absolute():
+            cand = (Path(__file__).resolve().parent.parent / cand).resolve()
+        if (cand / "config.json").exists() and (cand / "modules.json").exists():
+            return str(cand)
+        return None
 
     def name(self) -> str:
         return "local-sentence-transformer"

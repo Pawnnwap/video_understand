@@ -7,7 +7,7 @@ Three model backends are used:
                      or API key — opencode hosts the model internally.
   • LLM  (text)    — LOCAL, via LM Studio (e.g. qwen3.5-4b).  Used for phase-3
                      fusion text summaries and the query engine.
-  • OCR            — LOCAL PaddleOCR (subprocess), unchanged.
+  • OCR            — LOCAL RapidOCR (ONNX, inline via onnxruntime).
 
 Environment variables take precedence over defaults:
   VLM:   VLM_MODEL  (provider/model id; default opencode/mimo-v2.5-free)

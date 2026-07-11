@@ -5,15 +5,17 @@
 ## 功能特性
 
 - **语音转文字**: FunASR (paraformer-zh) 中文原生转录，带时间戳
-- **视觉分析**: VLM帧分析 + PaddleOCR 幻灯片内容提取
+- **视觉分析**: VLM帧分析 + RapidOCR (ONNX) 幻灯片内容提取
 - **语义搜索**: ChromaDB向量存储用于知识检索
+- **网络核查**: 通过DDGS搜索对视频声明进行网络事实核查
 - **交互式CLI**: 自然语言查询已处理视频
 
 ## 系统要求
 
 - Python 3.10+
 - ffmpeg（用于音频提取）
-- LM Studio（用于VLM/LLM推理）
+- [opencode](https://opencode.ai) CLI（用于VLM/LLM推理，内置免费模型）
+- LM Studio（可选，用于独立的`query.py`）
 - 推荐CUDA显卡
 
 ## 安装
@@ -37,10 +39,13 @@ pip install -r requirements.txt
 
 | 环境变量 | 默认值 | 描述 |
 |----------|--------|------|
-| `LM_STUDIO_BASE_URL` | `http://127.0.0.1:1234/v1` | LM Studio端点 |
-| `LM_STUDIO_API_KEY` | `lm-studio` | API密钥 |
-| `VLM_MODEL` | `qwen3.5-4b` | 视觉模型名称 |
-| `LLM_MODEL` | `qwen3.5-4b` | 语言模型名称 |
+| `VLM_MODEL` | `opencode/mimo-v2.5-free` | 视觉模型（opencode提供商） |
+| `VLM_VARIANT` | (无) | 推理变体（low/medium/high/max） |
+| `OPENCODE_SERVER_PORT` | `0`（随机） | opencode服务器端口 |
+| `VLM_LLM_MODEL` | 同VLM_MODEL | 融合阶段文本LLM模型 |
+| `LLM_BASE_URL` | `http://127.0.0.1:1235/v1` | LM Studio端点（独立query.py） |
+| `LLM_API_KEY` | `lm-studio` | LM Studio API密钥 |
+| `LLM_MODEL` | `qwen3.5-4b` | LM Studio语言模型 |
 
 ### FunASR（语音识别）
 
@@ -54,13 +59,13 @@ pip install -r requirements.txt
 | `FUNASR_TIMEOUT_S` | `0` | 超时（0=无限制） |
 | `STT_SENTENCE_SPLIT_GAP_MS` | `500` | 句子分割间隙阈值（毫秒） |
 
-### OCR（PaddleOCR）
+### OCR（RapidOCR, ONNX）
 
 | 参数 | 默认值 | 描述 |
 |------|--------|------|
-| `OCR_MODEL_NAME` | `PP-OCRv5_mobile` | OCR模型 |
+| `OCR_MODEL_NAME` | `PP-OCRv5_mobile` | OCR模型名称（仅供参考） |
 | `OCR_LANG` | `ch` | OCR语言 |
-| `OCR_USE_GPU` | `True` | OCR使用GPU |
+| `OCR_USE_GPU` | `True` | OCR使用GPU（onnxruntime CUDA） |
 | `OCR_MIN_CONFIDENCE` | `0.6` | 最小置信度阈值 |
 | `OCR_TIMEOUT_S` | `60` | OCR子进程超时 |
 | `OCR_RICH_TEXT_MIN_LINES` | `3` | 富文本检测最小行数 |
@@ -115,8 +120,8 @@ pip install -r requirements.txt
 CLI参数覆盖（最高优先级）：
 
 ```bash
-python cli.py video.mp4 --base-url http://localhost:1234/v1 --vlm-model qwen3.5-4b
-python pipeline.py URL --api-key your-key --llm-model qwen3.5-4b
+python cli.py video.mp4 --vlm-model opencode/mimo-v2.5-free --llm-model qwen3.5-4b
+python pipeline.py URL --llm-model qwen3.5-4b
 python query.py ./video_db/project --model qwen3.5-4b
 ```
 
@@ -173,6 +178,7 @@ python query.py ./video_db/my_lecture --at 05:30 --question "显示什么幻灯�
 | `/transcript` | 完整转录 |
 | `/at MM:SS [问题]` | 时间戳查询 |
 | `/knowledge <主题>` | 深度提取 |
+| `/crosscheck [n]` | 网络事实核查（默认5条） |
 | `<任意文本>` | 语义搜索 |
 
 ## 架构
@@ -209,7 +215,6 @@ video_summarize/
 ├── query.py                  # 独立查询界面
 ├── config.py                 # 配置（所有可调参数）
 ├── downloader.py             # 视频下载（yt-dlp）
-├── protocol.md               # 开发协议
 ├── requirements.txt          # 依赖
 ├── core/
 │   ├── lang.py               # 语言检测
@@ -219,15 +224,18 @@ video_summarize/
 │   └── vision/
 │       ├── __init__.py       # 视觉模块初始化
 │       ├── frame_sampler.py  # 自适应帧提取
-│       ├── vlm_analyser.py   # VLM帧分析 + 内联 RapidOCR OCR
-│       └── opencode_vlm.py   # opencode serve 子进程 + HTTP 客户端封装
+│       ├── vlm_analyser.py   # VLM帧分析 + 内联RapidOCR
+│       └── opencode_vlm.py   # opencode serve 子进程 + HTTP 客户端
 ├── query/
 │   ├── __init__.py           # 查询模块初始化
-│   └ query_engine.py       # RAG查询引擎
+│   ├── query_engine.py       # RAG查询引擎
+│   └── crosscheck.py         # 网络事实核查管道
 ├── utils/
 │   ├── __init__.py           # 工具模块初始化
 │   ├── video.py              # 视频工具
-│   └ retry.py              # 重试工具
+│   ├── retry.py              # 重试工具
+│   └── logging_setup.py      # 日志配置
+├── models/                   # 内置离线模型
 └── video_db/                 # 已处理项目存储
 ```
 
@@ -239,7 +247,7 @@ video_summarize/
 
 **LM Studio连接失败**: 确认LM Studio运行且模型已加载。
 
-**PaddleOCR失败**: 无CUDA时设置`OCR_USE_GPU=False`。
+**RapidOCR失败**: 无CUDA或onnxruntime-gpu问题时设置`OCR_USE_GPU=False`。
 
 ## 许可证
 

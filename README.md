@@ -5,15 +5,17 @@ A comprehensive video analysis system that transforms lecture/recording videos i
 ## Features
 
 - **Speech-to-Text**: FunASR (paraformer-zh) for Chinese-native transcription with timestamps
-- **Visual Analysis**: VLM frame analysis + PaddleOCR for slide content extraction
+- **Visual Analysis**: VLM frame analysis + RapidOCR (ONNX) for slide content extraction
 - **Semantic Search**: ChromaDB vector store for knowledge retrieval
+- **Web Fact-Checking**: Crosscheck claims against web sources via DDGS
 - **Interactive CLI**: Query processed videos with natural language
 
 ## Requirements
 
 - Python 3.10+
 - ffmpeg (for audio extraction)
-- LM Studio (for VLM/LLM inference)
+- [opencode](https://opencode.ai) CLI (for VLM/LLM inference, free built-in models)
+- LM Studio (optional, for standalone `query.py`)
 - CUDA-capable GPU recommended
 
 ## Installation
@@ -37,10 +39,13 @@ Configuration is via `config.py` or environment variables:
 
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
-| `LM_STUDIO_BASE_URL` | `http://127.0.0.1:1234/v1` | LM Studio endpoint |
-| `LM_STUDIO_API_KEY` | `lm-studio` | API key |
-| `VLM_MODEL` | `qwen3.5-4b` | Vision model name |
-| `LLM_MODEL` | `qwen3.5-4b` | Language model name |
+| `VLM_MODEL` | `opencode/mimo-v2.5-free` | Vision model (opencode provider) |
+| `VLM_VARIANT` | (none) | Reasoning variant (low/medium/high/max) |
+| `OPENCODE_SERVER_PORT` | `0` (random) | opencode server port |
+| `VLM_LLM_MODEL` | same as VLM_MODEL | Model for fusion text-LLM |
+| `LLM_BASE_URL` | `http://127.0.0.1:1235/v1` | LM Studio endpoint (standalone query.py) |
+| `LLM_API_KEY` | `lm-studio` | LM Studio API key |
+| `LLM_MODEL` | `qwen3.5-4b` | LM Studio language model |
 
 ### FunASR (Speech-to-Text)
 
@@ -54,13 +59,13 @@ Configuration is via `config.py` or environment variables:
 | `FUNASR_TIMEOUT_S` | `0` | Timeout (0=unlimited) |
 | `STT_SENTENCE_SPLIT_GAP_MS` | `500` | Sentence split gap threshold (ms) |
 
-### OCR (PaddleOCR)
+### OCR (RapidOCR, ONNX)
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `OCR_MODEL_NAME` | `PP-OCRv5_mobile` | OCR model |
+| `OCR_MODEL_NAME` | `PP-OCRv5_mobile` | OCR model name (informational) |
 | `OCR_LANG` | `ch` | OCR language |
-| `OCR_USE_GPU` | `True` | Use GPU for OCR |
+| `OCR_USE_GPU` | `True` | Use GPU for OCR (onnxruntime CUDA) |
 | `OCR_MIN_CONFIDENCE` | `0.6` | Minimum confidence threshold |
 | `OCR_TIMEOUT_S` | `60` | OCR subprocess timeout |
 | `OCR_RICH_TEXT_MIN_LINES` | `3` | Min lines for rich text detection |
@@ -115,8 +120,8 @@ Configuration is via `config.py` or environment variables:
 CLI overrides (highest priority):
 
 ```bash
-python cli.py video.mp4 --base-url http://localhost:1234/v1 --vlm-model qwen3.5-4b
-python pipeline.py URL --api-key your-key --llm-model qwen3.5-4b
+python cli.py video.mp4 --vlm-model opencode/mimo-v2.5-free --llm-model qwen3.5-4b
+python pipeline.py URL --llm-model qwen3.5-4b
 python query.py ./video_db/project --model qwen3.5-4b
 ```
 
@@ -173,6 +178,7 @@ Inside a project:
 | `/transcript` | Full transcript |
 | `/at MM:SS [q]` | Query at timestamp |
 | `/knowledge <topic>` | Deep extraction |
+| `/crosscheck [n]` | Fact-check top N claims (default 5) |
 | `<any text>` | Semantic search |
 
 ## Architecture
@@ -209,7 +215,6 @@ video_summarize/
 ├── query.py                  # Standalone query interface
 ├── config.py                 # Configuration (all tunable parameters)
 ├── downloader.py             # Video download (yt-dlp)
-├── protocol.md               # Development protocol
 ├── requirements.txt          # Dependencies
 ├── core/
 │   ├── lang.py               # Language detection
@@ -219,15 +224,18 @@ video_summarize/
 │   └── vision/
 │       ├── __init__.py       # Vision module init
 │       ├── frame_sampler.py  # Adaptive frame extraction
-│       ├── vlm_analyser.py   # VLM frame analysis + inline RapidOCR OCR
-│       └── opencode_vlm.py   # opencode serve subprocess + HTTP client helper
+│       ├── vlm_analyser.py   # VLM frame analysis + inline RapidOCR
+│       └── opencode_vlm.py   # opencode serve subprocess + HTTP client
 ├── query/
 │   ├── __init__.py           # Query module init
-│   └ query_engine.py       # RAG query engine
+│   ├── query_engine.py       # RAG query engine
+│   └── crosscheck.py         # Web fact-checking pipeline
 ├── utils/
 │   ├── __init__.py           # Utils module init
 │   ├── video.py              # Video utilities
-│   └ retry.py              # Retry utilities
+│   ├── retry.py              # Retry utilities
+│   └── logging_setup.py      # Logging configuration
+├── models/                   # Bundled offline models
 └── video_db/                 # Processed project storage
 ```
 
@@ -239,7 +247,7 @@ video_summarize/
 
 **LM Studio connection failed**: Verify LM Studio is running and model loaded.
 
-**PaddleOCR fails**: Set `OCR_USE_GPU=False` if no CUDA.
+**RapidOCR fails**: Set `OCR_USE_GPU=False` if no CUDA or onnxruntime-gpu issues.
 
 ## License
 

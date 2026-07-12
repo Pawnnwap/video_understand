@@ -73,6 +73,13 @@ VLM_CALL_TIMEOUT_S = 120
 OCR_PARALLEL_FRACTION = float(os.environ.get("OCR_PARALLEL_FRACTION", "0.9"))
 VLM_MAX_PARALLEL = int(os.environ.get("VLM_MAX_PARALLEL", "4"))
 
+# Phase-2a parallelism: independent ffmpeg frame-extraction subprocesses run
+# concurrently. ffmpeg spawns a full process per frame (disk + decode bound),
+# so cap at cores but not so high it thrashes the disk.
+FRAME_EXTRACT_MAX_PARALLEL = int(
+    os.environ.get("FRAME_EXTRACT_MAX_PARALLEL", "") or min(8, os.cpu_count() or 4)
+)
+
 FFMPEG_TIMEOUT_S = 300
 FFMPEG_EXTRACTION_TIMEOUT_S = 60
 FUNASR_TIMEOUT_S = 0
@@ -83,6 +90,10 @@ RETRY_MAX_DELAY_S = 30.0
 RETRY_JITTER_FACTOR = 0.25
 
 FUSION_SEGMENT_SIZE = 5
+# Phase-3 parallelism: each segment's fusion is an independent text-LLM call
+# (fresh opencode session per call), so they run concurrently up to this cap
+# — matched to the VLM cap since they share the same opencode backend.
+FUSION_MAX_PARALLEL = int(os.environ.get("FUSION_MAX_PARALLEL", "4"))
 
 # Crosscheck agent idle timeout: a claim session is aborted only after this
 # many seconds with NO activity. Every observed event resets its timer.

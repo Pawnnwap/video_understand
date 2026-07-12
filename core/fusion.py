@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -102,10 +103,11 @@ def fuse(sentences, analyses, llm, cfg, lang: str = "zh") -> list[FusedSegment]:
     chunk_size = cfg.FUSION_SEGMENT_SIZE
     if chunk_size < 1:
         raise ValueError(f"FUSION_SEGMENT_SIZE must be >= 1, got {chunk_size}")
-    fused_segments: list[FusedSegment] = []
-    total_chunks = max(1, (n + chunk_size - 1) // chunk_size)
-    log.info(f"Fusing {n} sentences in chunks of {chunk_size} (lang={lang}) ...")
-    for chunk_start in tqdm(range(0, n, chunk_size), total=total_chunks, desc="Phase 3 fuse", unit="seg", leave=True):
+
+    # Phase A: build every segment (pure, fast, sequential) so the parallel
+    # LLM phase has a stable ordered list to fill in place.
+    segments: list[FusedSegment] = []
+    for chunk_start in range(0, n, chunk_size):
         chunk = sentences[chunk_start: chunk_start + chunk_size]
         sid = chunk_start // chunk_size
         combined_text = " ".join(s.text for s in chunk)
@@ -132,20 +134,25 @@ def fuse(sentences, analyses, llm, cfg, lang: str = "zh") -> list[FusedSegment]:
             seg.frame_timestamp_ms = best_frame.timestamp_ms
             seg.frame_path = best_frame.frame_path
             seg.is_slide_change = best_frame.visual_delta in ("slide_change", "major_change")
+        segments.append(seg)
+
+    # Phase B: one independent text-LLM call per segment, run in parallel
+    # (each call_text uses a fresh opencode session). Segments are mutated in
+    # place, so ordering is preserved regardless of completion order.
+    def _fuse_one(seg: FusedSegment) -> None:
         try:
             prompt = _build_fusion_prompt(seg, lang)
 
             def _call_llm():
-                return llm.call_text(
-                    prompt,
-                    variant=getattr(cfg, "LLM_VARIANT", None),
-                )
-            seg.fused_summary = retry_sync(_call_llm, cfg=_FUSION_RETRY, label=f"fusion_llm_seg{sid}")
+                return llm.call_text(prompt, variant=getattr(cfg, "LLM_VARIANT", None))
+            seg.fused_summary = retry_sync(
+                _call_llm, cfg=_FUSION_RETRY, label=f"fusion_llm_seg{seg.segment_id}"
+            )
         except Exception as e:
-            log.warning(f"Fusion LLM call failed for segment {sid} after retries: {e}")
-            seg.fused_summary = combined_text
+            log.warning(f"Fusion LLM call failed for segment {seg.segment_id} after retries: {e}")
+            seg.fused_summary = seg.transcript
             if seg.slide_title:
-                seg.fused_summary = f"[{seg.slide_title}] {combined_text}"
+                seg.fused_summary = f"[{seg.slide_title}] {seg.transcript}"
         parts = [seg.fused_summary]
         if seg.slide_title:
             parts.append(f"Slide: {seg.slide_title}")
@@ -156,11 +163,21 @@ def fuse(sentences, analyses, llm, cfg, lang: str = "zh") -> list[FusedSegment]:
         if seg.diagram_description:
             parts.append(f"Diagram: {seg.diagram_description}")
         seg.embedding_text = "\n".join(parts)
-        log.info(f"Segment {sid:03d}  [{_fmt_ms(start_ms)} -> {_fmt_ms(end_ms)}]  "
+        log.info(f"Segment {seg.segment_id:03d}  [{_fmt_ms(seg.start_ms)} -> {_fmt_ms(seg.end_ms)}]  "
                  f"slide_change={seg.is_slide_change}")
-        fused_segments.append(seg)
-    log.info(f"Fusion complete: {len(fused_segments)} segments.")
-    return fused_segments
+
+    workers = min(int(getattr(cfg, "FUSION_MAX_PARALLEL", 4)), len(segments)) or 1
+    log.info(f"Fusing {n} sentences in {len(segments)} segments "
+             f"on {workers} parallel LLM workers (lang={lang}) ...")
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="fuse") as pool:
+        for _ in tqdm(
+            pool.map(_fuse_one, segments), total=len(segments),
+            desc=f"Phase 3 fuse x{workers}", unit="seg", leave=True,
+        ):
+            pass
+
+    log.info(f"Fusion complete: {len(segments)} segments.")
+    return segments
 
 
 def _fmt_ms(ms: int) -> str:

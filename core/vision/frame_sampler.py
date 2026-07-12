@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -93,13 +94,26 @@ def extract_frames(
     to_extract = [req for req in schedule if not _frame_path(frames_dir, req.timestamp_ms).exists()]
 
     if to_extract:
-        log.info(f"Extracting {len(to_extract)} new frames (of {len(schedule)} scheduled) ...")
         duration_s = get_video_duration(video_path, getattr(cfg, "FFMPEG_TIMEOUT_S", 300))
-        failed = 0
-        for req in tqdm(to_extract, desc="Phase 2a extract", unit="frame", leave=True):
-            success = _extract_one_frame(video_path, req, frames_dir, cfg, duration_s)
-            if not success:
-                failed += 1
+        workers = min(
+            int(getattr(cfg, "FRAME_EXTRACT_MAX_PARALLEL", 8)), len(to_extract)
+        )
+        log.info(
+            f"Extracting {len(to_extract)} new frames (of {len(schedule)} scheduled) "
+            f"on {workers} parallel ffmpeg workers ..."
+        )
+
+        def _extract(req: FrameRequest) -> bool:
+            return _extract_one_frame(video_path, req, frames_dir, cfg, duration_s)
+
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ffmpeg") as pool:
+            failed = sum(
+                not ok
+                for ok in tqdm(
+                    pool.map(_extract, to_extract), total=len(to_extract),
+                    desc=f"Phase 2a extract x{workers}", unit="frame", leave=True,
+                )
+            )
 
         if failed:
             log.warning(f"Failed to extract {failed}/{len(to_extract)} frames")

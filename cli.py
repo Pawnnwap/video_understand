@@ -84,6 +84,56 @@ def _build_llm():
     )
 
 
+# ---------------------------------------------------------------------------
+#  Opencode model overrides (shared by cli.py and process_queue.py)
+# ---------------------------------------------------------------------------
+
+def add_model_args(parser: argparse.ArgumentParser) -> None:
+    """Register the opencode model/variant/port override flags on a parser."""
+    parser.add_argument("--vlm-model", help="opencode vision model id (default opencode/mimo-v2.5-free)")
+    parser.add_argument("--vlm-variant", help="opencode vision model variant (low|medium|high)")
+    parser.add_argument(
+        "--text-model", "--llm-model", dest="text_model",
+        help="opencode text model for fusion, queries, and crosscheck",
+    )
+    parser.add_argument(
+        "--text-variant", "--llm-variant", dest="text_variant",
+        help="opencode text-model reasoning variant (low|medium|high)",
+    )
+    parser.add_argument("--opencode-port", type=int, help="Fixed port for the opencode server (0 = random)")
+
+
+def apply_model_overrides(args: argparse.Namespace) -> None:
+    """Write any supplied model overrides into the global config."""
+    if getattr(args, "vlm_model", None):
+        cfg.VLM_MODEL = args.vlm_model
+    if getattr(args, "vlm_variant", None):
+        cfg.VLM_VARIANT = args.vlm_variant
+    if getattr(args, "text_model", None):
+        cfg.LLM_MODEL = args.text_model
+    if getattr(args, "text_variant", None):
+        cfg.LLM_VARIANT = args.text_variant
+    if getattr(args, "opencode_port", None) is not None:
+        cfg.OPENCODE_SERVER_PORT = args.opencode_port
+
+
+def pipeline_model_flags() -> list[str]:
+    """Effective model settings as pipeline.py CLI flags.
+
+    Forwarded to every pipeline subprocess so it runs with the same models
+    this process resolved, whether they came from defaults or CLI overrides.
+    """
+    flags = [
+        "--vlm-model", cfg.VLM_MODEL,
+        "--vlm-variant", getattr(cfg, "VLM_VARIANT", None) or "low",
+        "--text-model", getattr(cfg, "LLM_MODEL", cfg.VLM_MODEL),
+        "--text-variant", getattr(cfg, "LLM_VARIANT", None) or "high",
+    ]
+    if cfg.OPENCODE_SERVER_PORT:
+        flags += ["--opencode-port", str(cfg.OPENCODE_SERVER_PORT)]
+    return flags
+
+
 def _list_projects(db_root: Path) -> list:
     """Return processed project dirs, newest first."""
     if not db_root.exists():
@@ -165,28 +215,18 @@ def _load_project(db_path: Path):
     return db, engine, llm
 
 
-def _run_pipeline(
-    source: str,
-    vlm_model: str | None = None,
-    text_model: str | None = None,
-    vlm_variant: str | None = None,
-    text_variant: str | None = None,
-    opencode_port: int | None = None,
-) -> bool:
-    """Run pipeline.py on source, inheriting stdio for live output."""
+def _run_pipeline(source: str) -> bool:
+    """Run pipeline.py on source, inheriting stdio for live output.
+
+    The current cfg model settings (defaults or CLI overrides) are forwarded
+    so the subprocess uses the same models as this process.
+    """
     print(f"\n  Launching pipeline for: {source}")
     print("  (runs in the foreground -- please wait)\n")
-    cmd = [sys.executable, str(Path(__file__).parent / "pipeline.py"), source]
-    if vlm_model:
-        cmd.extend(["--vlm-model", vlm_model])
-    if text_model:
-        cmd.extend(["--text-model", text_model])
-    if vlm_variant:
-        cmd.extend(["--vlm-variant", vlm_variant])
-    if text_variant:
-        cmd.extend(["--text-variant", text_variant])
-    if opencode_port is not None:
-        cmd.extend(["--opencode-port", str(opencode_port)])
+    cmd = [
+        sys.executable, str(Path(__file__).parent / "pipeline.py"),
+        source, *pipeline_model_flags(),
+    ]
     r = subprocess.run(cmd)
     return r.returncode == 0
 
@@ -449,29 +489,10 @@ def _workspace_repl(db_root: Path, open_immediately=None):
 def main():
     parser = argparse.ArgumentParser(description="Video Understanding CLI")
     parser.add_argument("source", nargs="?", help="Video path, URL, or BV code")
-    parser.add_argument("--vlm-model", help="opencode vision model id (default opencode/mimo-v2.5-free)")
-    parser.add_argument("--vlm-variant", help="opencode model variant (low|medium|high)")
-    parser.add_argument(
-        "--text-model", "--llm-model", dest="text_model",
-        help="opencode text model for fusion and queries",
-    )
-    parser.add_argument(
-        "--text-variant", "--llm-variant", dest="text_variant",
-        help="opencode text-model reasoning variant (low|medium|high)",
-    )
-    parser.add_argument("--opencode-port", type=int, help="Fixed port for the opencode server (0 = random)")
+    add_model_args(parser)
     args = parser.parse_args()
 
-    if args.vlm_model:
-        cfg.VLM_MODEL = args.vlm_model
-    if args.vlm_variant:
-        cfg.VLM_VARIANT = args.vlm_variant
-    if args.text_model:
-        cfg.LLM_MODEL = args.text_model
-    if args.text_variant:
-        cfg.LLM_VARIANT = args.text_variant
-    if args.opencode_port is not None:
-        cfg.OPENCODE_SERVER_PORT = args.opencode_port
+    apply_model_overrides(args)
 
     db_root = Path(cfg.DB_DIR)
 
@@ -489,10 +510,7 @@ def main():
             return
 
         print(f"\n  '{arg}' not found as an existing project -- running pipeline first...")
-        ok = _run_pipeline(
-            arg, args.vlm_model, args.text_model, args.vlm_variant,
-            args.text_variant, args.opencode_port,
-        )
+        ok = _run_pipeline(arg)
         if ok:
             projects = _list_projects(db_root)
             if projects:

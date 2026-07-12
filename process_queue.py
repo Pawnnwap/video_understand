@@ -26,7 +26,13 @@ from datetime import datetime
 from pathlib import Path
 
 import config as cfg
-from cli import _list_projects, _load_project
+from cli import (
+    _list_projects,
+    _load_project,
+    add_model_args,
+    apply_model_overrides,
+    pipeline_model_flags,
+)
 from query.crosscheck import crosscheck
 
 
@@ -40,8 +46,15 @@ def _read_queue_file(path: Path) -> list[str]:
 
 
 def _run_pipeline(source: str) -> bool:
-    """Run pipeline.py on one source with live output; True on success."""
-    cmd = [sys.executable, str(Path(__file__).parent / "pipeline.py"), source]
+    """Run pipeline.py on one source with live output; True on success.
+
+    Forwards the effective opencode model settings (defaults or CLI overrides)
+    so the subprocess matches the report/crosscheck LLM built in this process.
+    """
+    cmd = [
+        sys.executable, str(Path(__file__).parent / "pipeline.py"),
+        source, *pipeline_model_flags(),
+    ]
     return subprocess.run(cmd).returncode == 0
 
 
@@ -104,7 +117,10 @@ def main() -> None:
     parser.add_argument("--file", type=Path, help="Queue file with one source per line")
     parser.add_argument("--out-dir", type=Path, default=Path("reports"), help="Report output directory (default: reports/)")
     parser.add_argument("--crosscheck-n", type=int, default=5, help="Number of claims to fact-check, 1-10 (default 5)")
+    add_model_args(parser)
     args = parser.parse_args()
+
+    apply_model_overrides(args)
 
     # Accept any mix of space- and comma-separated codes, plus a queue file.
     raw = list(args.sources)

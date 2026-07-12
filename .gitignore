@@ -6,6 +6,7 @@ __pycache__/
 models/
 video_db/
 downloads/
+reports/
 .vscode/
 # super-opencode
 .archive

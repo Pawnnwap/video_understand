@@ -154,8 +154,20 @@ class OpencodeVLM:
 
     # ── VLM call ──────────────────────────────────────────────────────
 
-    def call(self, image_b64: str, prompt: str, mime: str = "image/jpeg") -> str:
-        """Send one image + prompt; return the assistant's text response."""
+    def call(
+        self,
+        image_b64: str,
+        prompt: str,
+        mime: str = "image/jpeg",
+        fresh_session: bool = False,
+    ) -> str:
+        """Send one image + prompt; return the assistant's text response.
+
+        ``fresh_session=True`` isolates the call in its own session — required
+        when calls run concurrently, since parallel posts to the shared
+        session would interleave chat history.
+        """
+        sid = self._create_session() if fresh_session else self._session_id
         body: dict = {
             "model": {"providerID": self._provider, "modelID": self._model},
             "parts": [
@@ -170,7 +182,7 @@ class OpencodeVLM:
         if self._variant:
             body["variant"] = self._variant
         r = self._client.post(
-            f"{self._base_url}/session/{self._session_id}/message",
+            f"{self._base_url}/session/{sid}/message",
             json=body,
         )
         r.raise_for_status()

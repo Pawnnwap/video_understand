@@ -1,21 +1,18 @@
 """core/vision/vlm_analyser.py — Phase 2b
-Two-track frame analysis — strictly sequential, no asyncio, no threads.
+Two-track frame analysis, pipelined in four phases:
 
-  Track A — RapidOCR (ONNX) inline, GPU via onnxruntime CUDAExecutionProvider.
-    One persistent engine instance reused across all frames (no per-frame model
-    reload).  Uses the same PP-OCR ONNX models that PaddleOCR exposes.
-
-  Track B — VLM (opencode local server / mimo-v2.5-free)
-    A single structured call per frame analysing scene, slide, diagram,
-    and visual delta in one shot.  OCR runs first; if the frame is text-rich
-    (ocr_lines >= max(OCR_RICH_TEXT_MIN_LINES, running_avg)) the VLM is skipped.
-
-Frame loop order per frame:
-  1. Skip if timestamp cached.
-  2. Skip if perceptually identical to last analysed frame.
-  3. Run OCR.
-  4. Adaptive VLM gate — skip VLM if text-rich.
-  5. If VLM needed: compress → one merged structured VLM call.
+  Phase 0 (sequential, cheap): cache and frame-similarity gates.
+  Phase 1 (parallel): RapidOCR over the surviving frames on a thread pool
+    sized to OCR_PARALLEL_FRACTION of the CPU cores; each worker thread owns
+    its own RapidOCR engine (onnxruntime sessions are not shared).
+  Phase 2 (sequential, cheap): adaptive VLM gate — replays the running
+    OCR-line average in frame order, so gating decisions are identical to the
+    old sequential implementation.
+  Phase 3 (parallel): merged VLM calls (scene/slide/diagram/delta) on a pool
+    capped at VLM_MAX_PARALLEL; each call uses a fresh opencode session.
+    The delta prompt uses the nearest earlier frame whose scene description
+    has already completed (under parallelism the immediate predecessor may
+    still be in flight).
 """
 
 from __future__ import annotations
@@ -23,6 +20,9 @@ from __future__ import annotations
 import collections
 import json
 import logging
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import NamedTuple
@@ -76,7 +76,7 @@ class FrameAnalysis:
 #  Track A — RapidOCR inline (GPU via onnxruntime CUDAExecutionProvider)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_ocr_engine = None
+_ocr_tls = threading.local()  # one RapidOCR engine per worker thread
 _ocr_available: bool | None = None
 
 
@@ -96,30 +96,24 @@ def _torch_lib_dir() -> str | None:
 
 
 def _get_ocr_engine(cfg):
-    """Lazily build a single RapidOCR engine (CUDA if available) and cache it."""
-    global _ocr_engine
-    if _ocr_engine is not None:
-        return _ocr_engine
+    """Lazily build one RapidOCR engine per thread (CUDA if available)."""
+    engine = getattr(_ocr_tls, "engine", None)
+    if engine is not None:
+        return engine
     import os as _os
     lib = _torch_lib_dir()
     if lib:
         _os.environ["PATH"] = lib + _os.pathsep + _os.environ.get("PATH", "")
     from rapidocr_onnxruntime import RapidOCR
     use_gpu = bool(getattr(cfg, "OCR_USE_GPU", True))
-    _ocr_engine = RapidOCR(
+    engine = RapidOCR(
         det_use_cuda=use_gpu, cls_use_cuda=use_gpu, rec_use_cuda=use_gpu,
     )
-    eng_providers = []
-    try:
-        for attr in ("det", "cls", "rec"):
-            sub = getattr(_ocr_engine, attr, None)
-            sess = getattr(sub, "session", None) if sub else None
-            if sess is not None and hasattr(sess, "get_providers"):
-                eng_providers.append(f"{attr}={sess.get_providers()}")
-    except Exception:
-        pass
-    log.info(f"RapidOCR engine ready (use_gpu={use_gpu}) {', '.join(eng_providers)}")
-    return _ocr_engine
+    _ocr_tls.engine = engine
+    log.info(
+        f"RapidOCR engine ready (use_gpu={use_gpu}, thread={threading.current_thread().name})"
+    )
+    return engine
 
 
 def _check_ocr_available(cfg=None) -> bool:
@@ -206,7 +200,7 @@ def _build_prompt(lang: str, prev_desc: str | None) -> _PromptSet:
     has_delta = bool(prev_desc)
     if has_delta:
         extra = (
-            f"\n前一帧场景(t≤250字)：{prev_desc[:250]}\n" if lang == "zh"
+            f"\n前一帧场景(≤250字)：{prev_desc[:250]}\n" if lang == "zh"
             else f"\nPrevious frame scene (≤250 chars): {prev_desc[:250]}\n"
         )
         merged = base + extra
@@ -270,92 +264,13 @@ def _parse_vlm_json(analysis: FrameAnalysis, raw: str, prompts: _PromptSet) -> N
 _VALID_DELTAS = frozenset(("same", "slide_change", "new_content", "major_change"))
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Per-frame analysis (synchronous)
+#  Batch runner — pipelined: parallel OCR pool + capped parallel VLM pool
 # ─────────────────────────────────────────────────────────────────────────────
 
-def analyse_frame(
-    req,
-    frame_path: Path,
-    prev_analysis: FrameAnalysis | None,
-    vlm,
-    cfg,
-    frame_cache: dict[str, FrameAnalysis],
-    prompts: _PromptSet,
-    *,
-    ocr_prefetch: tuple[str, list[str]] | None = None,
-    skip_vlm: bool = False,
-) -> FrameAnalysis:
-    from core.vision.frame_sampler import frame_hash
+def _ocr_worker_count(cfg) -> int:
+    fraction = float(getattr(cfg, "OCR_PARALLEL_FRACTION", 0.9))
+    return max(1, int((os.cpu_count() or 4) * fraction))
 
-    fhash = frame_hash(frame_path)
-
-    # Return a shallow copy with updated positional metadata if already cached
-    if fhash in frame_cache:
-        cached = frame_cache[fhash]
-        result = FrameAnalysis(**asdict(cached))
-        result.timestamp_ms = req.timestamp_ms
-        result.reason = req.reason
-        result.sentence_id = req.sentence_id
-        result.frame_path = str(frame_path)
-        result.visual_delta = "same"
-        return result
-
-    analysis = FrameAnalysis(
-        timestamp_ms=req.timestamp_ms,
-        reason=req.reason,
-        sentence_id=req.sentence_id,
-        frame_path=str(frame_path),
-        frame_hash=fhash,
-    )
-
-    # Track A: OCR
-    if ocr_prefetch is not None:
-        ocr_text, ocr_lines = ocr_prefetch
-    else:
-        try:
-            ocr_text, ocr_lines = run_ocr(frame_path, cfg)
-        except Exception as e:
-            log.warning(f"OCR error ts={req.timestamp_ms}ms: {e}")
-            analysis.ocr_error = str(e)
-            ocr_text, ocr_lines = "", []
-
-    analysis.ocr_text = ocr_text
-    analysis.ocr_lines = ocr_lines
-    analysis.has_text_content = bool(ocr_text.strip())
-
-    if skip_vlm:
-        analysis.vlm_skipped = True
-        analysis.visual_delta = "new_content"
-        frame_cache[fhash] = analysis
-        return analysis
-
-    # Track B: VLM
-    try:
-        image_b64, mime_type, w, h = compress_frame_for_vlm(frame_path, cfg)
-        analysis.image_size = f"{w}x{h}"
-    except Exception as e:
-        log.error(f"Frame compression failed ts={req.timestamp_ms}ms: {e}")
-        analysis.vlm_error = f"compression: {e}"
-        frame_cache[fhash] = analysis
-        return analysis
-
-    try:
-        raw = vlm.call(image_b64, prompts.merged, mime_type)
-        _parse_vlm_json(analysis, raw, prompts)
-        if not analysis.scene_description:
-            log.warning(f"VLM returned no scene ts={req.timestamp_ms}ms: {raw[:120]!r}")
-    except Exception as e:
-        log.error(f"VLM analysis failed ts={req.timestamp_ms}ms: {e}")
-        analysis.vlm_error = str(e)
-        if not analysis.visual_delta:
-            analysis.visual_delta = "unknown"
-    frame_cache[fhash] = analysis
-    return analysis
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Batch runner — plain for-loop, no asyncio
-# ─────────────────────────────────────────────────────────────────────────────
 
 def analyse_all_frames(
     frame_results: list[tuple],
@@ -364,113 +279,173 @@ def analyse_all_frames(
     out_dir: Path,
     lang: str = "zh",
 ) -> list[FrameAnalysis]:
-    """Process every frame one at a time — strictly sequential.
+    """Four-phase pipelined analysis; results keep frame order.
 
-    Per frame:
-      1. Skip if timestamp is already cached on disk.
-      2. Skip (copy prev + mark same) if perceptually identical to last frame.
-      3. Run OCR.
-      4. Adaptive VLM gate: skip VLM if ocr_lines >= max(floor, windowed_avg).
-      5. Run one merged VLM call (scene + slide + diagram + delta).
-
-    ``lang`` selects the prompt language: "zh" for Chinese, "en" for English.
+    Gate decisions (disk cache, similarity, adaptive VLM skip) replicate the
+    old sequential semantics exactly. Only the delta-prompt reference frame
+    is relaxed: under parallel VLM it is the nearest earlier frame whose
+    scene description has completed.
     """
+    from core.vision.frame_sampler import frame_hash
+
     log.info(f"VLM prompt language: {lang}")
     cache_path = out_dir / "frame_analyses.json"
-    frame_cache: dict[str, FrameAnalysis] = {}
-
-    existing = _load_analyses(cache_path)
-    existing_by_ts = {a.timestamp_ms: a for a in existing}
+    existing_by_ts = {a.timestamp_ms: a for a in _load_analyses(cache_path)}
 
     sim_threshold = getattr(cfg, "FRAME_SIMILARITY_THRESHOLD", 0.90)
     vlm_skip_floor = getattr(cfg, "OCR_RICH_TEXT_MIN_LINES", 3)
 
     n = len(frame_results)
-    analyses: list[FrameAnalysis] = []
-    completed = 0
-    skipped_sim = 0
-    skipped_vlm = 0
-    last_analyzed_path: Path | None = None
+    analyses: list[FrameAnalysis | None] = [None] * n
 
-    # Bounded deque prevents memory growth on very long videos and keeps
-    # the running average representative of recent content rather than the
-    # whole video.
-    ocr_line_history: collections.deque[int] = collections.deque(maxlen=_OCR_HISTORY_WINDOW)
-
-    skipped_cache = 0
-    pbar = tqdm(enumerate(frame_results), total=n, desc="Phase 2b VLM+OCR", unit="frame", leave=True)
-    for i, (req, path) in pbar:
-
-        # 1. Cache hit (prior run)
+    # ── Phase 0: cache + similarity gates (sequential, no OCR needed) ──
+    ocr_indices: list[int] = []   # frames that need OCR (original step 3)
+    dup_of: dict[int, int] = {}   # frame index -> earlier index to copy from
+    skipped_cache = skipped_sim = 0
+    last_analyzed_idx: int | None = None
+    for i, (req, path) in enumerate(frame_results):
         if req.timestamp_ms in existing_by_ts:
-            analyses.append(existing_by_ts[req.timestamp_ms])
-            last_analyzed_path = path
+            analyses[i] = existing_by_ts[req.timestamp_ms]
+            last_analyzed_idx = i
             skipped_cache += 1
-            pbar.set_postfix(cache=skipped_cache, sim=skipped_sim, vlm_skip=skipped_vlm, done=completed, status="cached")
             continue
-
-        # 2. Similarity gate
-        if last_analyzed_path is not None:
-            sim = compute_frame_similarity(path, last_analyzed_path)
+        if last_analyzed_idx is not None:
+            sim = compute_frame_similarity(path, frame_results[last_analyzed_idx][1])
             if sim >= sim_threshold:
-                prev = analyses[-1]
-                dup = FrameAnalysis(**asdict(prev))
-                dup.timestamp_ms = req.timestamp_ms
-                dup.reason = req.reason
-                dup.sentence_id = req.sentence_id
-                dup.frame_path = str(path)
-                dup.visual_delta = "same"
-                analyses.append(dup)
+                dup_of[i] = i - 1  # copy the immediately preceding entry
                 skipped_sim += 1
-                pbar.set_postfix(cache=skipped_cache, sim=skipped_sim, vlm_skip=skipped_vlm, done=completed, status=f"sim={sim:.2f}")
                 continue
+        ocr_indices.append(i)
+        last_analyzed_idx = i
 
-        # 3. OCR
-        try:
-            ocr_text, ocr_lines = run_ocr(path, cfg)
-        except Exception as e:
-            log.warning(f"OCR error ts={req.timestamp_ms}ms: {e}")
-            ocr_text, ocr_lines = "", []
+    # ── Phase 1: OCR pool ──────────────────────────────────────────────
+    ocr_results: dict[int, tuple[str, list[str]]] = {}
+    if ocr_indices:
+        workers = min(_ocr_worker_count(cfg), len(ocr_indices))
+        log.info(f"OCR pool: {workers} workers for {len(ocr_indices)} frames")
 
-        # 4. Adaptive VLM gate
+        def _ocr_one(idx: int) -> tuple[int, tuple[str, list[str]]]:
+            req, path = frame_results[idx]
+            try:
+                return idx, run_ocr(path, cfg)
+            except Exception as e:
+                log.warning(f"OCR error ts={req.timestamp_ms}ms: {e}")
+                return idx, ("", [])
+
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ocr") as pool:
+            for idx, result in tqdm(
+                pool.map(_ocr_one, ocr_indices), total=len(ocr_indices),
+                desc=f"Phase 2b OCR x{workers}", unit="frame", leave=True,
+            ):
+                ocr_results[idx] = result
+
+    # ── Phase 2: adaptive VLM gate (sequential replay, exact semantics) ─
+    frame_cache: dict[str, int] = {}          # frame hash -> first index
+    vlm_indices: list[int] = []
+    skipped_vlm = 0
+    ocr_line_history: collections.deque[int] = collections.deque(maxlen=_OCR_HISTORY_WINDOW)
+    for i in ocr_indices:
+        req, path = frame_results[i]
+        ocr_text, ocr_lines = ocr_results[i]
         n_lines = len(ocr_lines)
         ocr_avg = sum(ocr_line_history) / len(ocr_line_history) if ocr_line_history else 0.0
         skip_vlm = n_lines >= max(vlm_skip_floor, ocr_avg)
-        if skip_vlm:
-            skipped_vlm += 1
-
-        # 5. Analyse
-        prev = analyses[-1] if analyses else None
-        prev_desc = prev.scene_description if prev and prev.scene_description else None
-        prompts = _build_prompt(lang, prev_desc)
-        result = analyse_frame(
-            req, path, prev, vlm, cfg, frame_cache, prompts,
-            ocr_prefetch=(ocr_text, ocr_lines),
-            skip_vlm=skip_vlm,
-        )
-        analyses.append(result)
-        completed += 1
-        last_analyzed_path = path
         ocr_line_history.append(n_lines)
 
+        fhash = frame_hash(path)
+        if fhash in frame_cache:               # identical frame seen earlier
+            dup_of[i] = frame_cache[fhash]
+            continue
+        frame_cache[fhash] = i
+
+        analysis = FrameAnalysis(
+            timestamp_ms=req.timestamp_ms,
+            reason=req.reason,
+            sentence_id=req.sentence_id,
+            frame_path=str(path),
+            frame_hash=fhash,
+            ocr_text=ocr_text,
+            ocr_lines=ocr_lines,
+            has_text_content=bool(ocr_text.strip()),
+        )
+        analyses[i] = analysis
         if skip_vlm:
-            pbar.set_postfix(cache=skipped_cache, sim=skipped_sim, vlm_skip=skipped_vlm, done=completed, ocr=n_lines, status="ocr-only")
+            skipped_vlm += 1
+            analysis.vlm_skipped = True
+            analysis.visual_delta = "new_content"
         else:
-            pbar.set_postfix(cache=skipped_cache, sim=skipped_sim, vlm_skip=skipped_vlm, done=completed, ocr=n_lines, delta=result.visual_delta, status="vlm")
-            log.info(
-                f"ts={req.timestamp_ms}ms ocr_lines={n_lines} delta={result.visual_delta} size={result.image_size}",
-            )
+            vlm_indices.append(i)
 
+    # ── Phase 3: VLM pool (capped, fresh session per call) ─────────────
+    completed_scenes: dict[int, str] = {}
+    scenes_lock = threading.Lock()
+    save_lock = threading.Lock()
+    done_count = 0
 
-        if completed % 10 == 0:
-            _save_analyses(analyses, cache_path)
+    def _vlm_one(idx: int) -> None:
+        analysis = analyses[idx]
+        req = frame_results[idx][0]
+        try:
+            image_b64, mime_type, w, h = compress_frame_for_vlm(analysis.frame_path, cfg)
+            analysis.image_size = f"{w}x{h}"
+        except Exception as e:
+            log.error(f"Frame compression failed ts={req.timestamp_ms}ms: {e}")
+            analysis.vlm_error = f"compression: {e}"
+            analysis.visual_delta = "unknown"
+            return
+        with scenes_lock:
+            earlier = [j for j in completed_scenes if j < idx]
+            prev_desc = completed_scenes[max(earlier)] if earlier else None
+        prompts = _build_prompt(lang, prev_desc)
+        try:
+            raw = vlm.call(image_b64, prompts.merged, mime_type, fresh_session=True)
+            _parse_vlm_json(analysis, raw, prompts)
+            if not analysis.scene_description:
+                log.warning(f"VLM returned no scene ts={req.timestamp_ms}ms: {raw[:120]!r}")
+        except Exception as e:
+            log.error(f"VLM analysis failed ts={req.timestamp_ms}ms: {e}")
+            analysis.vlm_error = str(e)
+            if not analysis.visual_delta:
+                analysis.visual_delta = "unknown"
+        with scenes_lock:
+            if analysis.scene_description:
+                completed_scenes[idx] = analysis.scene_description
 
-    _save_analyses(analyses, cache_path)
+    if vlm_indices:
+        vlm_workers = min(int(getattr(cfg, "VLM_MAX_PARALLEL", 4)), len(vlm_indices))
+        log.info(f"VLM pool: {vlm_workers} parallel for {len(vlm_indices)} frames")
+        with ThreadPoolExecutor(max_workers=vlm_workers, thread_name_prefix="vlm") as pool:
+            for _ in tqdm(
+                pool.map(_vlm_one, vlm_indices), total=len(vlm_indices),
+                desc=f"Phase 2b VLM x{vlm_workers}", unit="frame", leave=True,
+            ):
+                done_count += 1
+                if done_count % 10 == 0:
+                    with save_lock:
+                        _save_analyses([a for a in analyses if a is not None], cache_path)
+
+    # ── Resolve similarity/hash duplicates (transitively) ──────────────
+    for i in sorted(dup_of):
+        src = dup_of[i]
+        while src in dup_of:
+            src = dup_of[src]
+        req, path = frame_results[i]
+        dup = FrameAnalysis(**asdict(analyses[src]))
+        dup.timestamp_ms = req.timestamp_ms
+        dup.reason = req.reason
+        dup.sentence_id = req.sentence_id
+        dup.frame_path = str(path)
+        dup.visual_delta = "same"
+        analyses[i] = dup
+
+    final = [a for a in analyses if a is not None]
+    _save_analyses(final, cache_path)
     log.info(
-        f"VLM+OCR complete: {len(analyses)} frames  "
-        f"(analyzed={completed}, skipped_identical={skipped_sim}, vlm_skipped={skipped_vlm})",
+        f"VLM+OCR complete: {len(final)} frames  "
+        f"(vlm={len(vlm_indices)}, ocr_only={skipped_vlm}, "
+        f"duplicates={len(dup_of)}, cached={skipped_cache})",
     )
-    return analyses
+    return final
 
 
 def _save_analyses(analyses: list[FrameAnalysis], path: Path) -> None:

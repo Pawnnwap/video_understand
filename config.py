@@ -67,6 +67,12 @@ VLM_MAX_TOKENS = 512
 VLM_TEMPERATURE = 0.1
 VLM_CALL_TIMEOUT_S = 120
 
+# Phase-2b parallelism: OCR may use up to this fraction of CPU cores (each
+# worker thread gets its own RapidOCR engine); VLM calls run concurrently up
+# to the cap below (each call uses a fresh opencode session).
+OCR_PARALLEL_FRACTION = float(os.environ.get("OCR_PARALLEL_FRACTION", "0.9"))
+VLM_MAX_PARALLEL = int(os.environ.get("VLM_MAX_PARALLEL", "4"))
+
 FFMPEG_TIMEOUT_S = 300
 FFMPEG_EXTRACTION_TIMEOUT_S = 60
 FUNASR_TIMEOUT_S = 0
@@ -78,9 +84,11 @@ RETRY_JITTER_FACTOR = 0.25
 
 FUSION_SEGMENT_SIZE = 5
 
-# Crosscheck agent idle timeout: aborted only after this many seconds with NO
-# session activity. Every observed event (tool call, streamed text) resets it.
+# Crosscheck agent idle timeout: a claim session is aborted only after this
+# many seconds with NO activity. Every observed event resets its timer.
 CROSSCHECK_IDLE_TIMEOUT_S = int(os.environ.get("CROSSCHECK_IDLE_TIMEOUT_S", "300"))
+# Claims are researched in parallel agent sessions, capped at this many.
+CROSSCHECK_MAX_PARALLEL = int(os.environ.get("CROSSCHECK_MAX_PARALLEL", "4"))
 
 DOWNLOAD_MAX_DURATION_SEC = 0
 

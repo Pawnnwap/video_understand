@@ -18,7 +18,6 @@ from core.vision.frame_sampler import (
 from core.vision.vlm_analyser import (
                                        FrameAnalysis,
                                        analyse_all_frames,
-                                       analyse_frame,
                                        run_ocr,
 )
 
@@ -26,7 +25,6 @@ __all__ = [
                                        "FrameAnalysis",
                                        "FrameRequest",
                                        "analyse_all_frames",
-                                       "analyse_frame",
                                        "build_frame_schedule",
                                        "extract_frames",
                                        "frame_hash",

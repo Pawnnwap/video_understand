@@ -206,12 +206,12 @@ def main():
 
     if args.vlm_model:
         cfg.VLM_MODEL = args.vlm_model
-    if args.vlm_variant:
-        cfg.VLM_VARIANT = args.vlm_variant
+    if args.vlm_variant is not None:
+        cfg.VLM_VARIANT = cfg.normalize_variant(args.vlm_variant)
     if args.text_model:
         cfg.LLM_MODEL = args.text_model
-    if args.text_variant:
-        cfg.LLM_VARIANT = args.text_variant
+    if args.text_variant is not None:
+        cfg.LLM_VARIANT = cfg.normalize_variant(args.text_variant)
     if args.opencode_port is not None:
         cfg.OPENCODE_SERVER_PORT = args.opencode_port
 

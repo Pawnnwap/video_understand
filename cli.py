@@ -91,28 +91,40 @@ def _build_llm():
 def add_model_args(parser: argparse.ArgumentParser) -> None:
     """Register the opencode model/variant/port override flags on a parser."""
     parser.add_argument("--vlm-model", help="opencode vision model id (default opencode/mimo-v2.5-free)")
-    parser.add_argument("--vlm-variant", help="opencode vision model variant (low|medium|high)")
+    parser.add_argument("--vlm-variant", help="opencode vision model variant (low|medium|high, or none)")
     parser.add_argument(
         "--text-model", "--llm-model", dest="text_model",
         help="opencode text model for fusion, queries, and crosscheck",
     )
     parser.add_argument(
         "--text-variant", "--llm-variant", dest="text_variant",
-        help="opencode text-model reasoning variant (low|medium|high)",
+        help="opencode text-model reasoning variant (low|medium|high, or none)",
+    )
+    parser.add_argument(
+        "--no-thinking", "--no-variant", dest="no_thinking", action="store_true",
+        help="disable reasoning/thinking on both models (for custom models with no thinking level)",
     )
     parser.add_argument("--opencode-port", type=int, help="Fixed port for the opencode server (0 = random)")
 
 
 def apply_model_overrides(args: argparse.Namespace) -> None:
-    """Write any supplied model overrides into the global config."""
+    """Write any supplied model overrides into the global config.
+
+    A variant of ``none``/``off``/`""` (or the ``--no-thinking`` switch)
+    disables reasoning: the variant is stored empty and later omitted from
+    opencode requests, which custom models without a thinking level require.
+    """
     if getattr(args, "vlm_model", None):
         cfg.VLM_MODEL = args.vlm_model
-    if getattr(args, "vlm_variant", None):
-        cfg.VLM_VARIANT = args.vlm_variant
     if getattr(args, "text_model", None):
         cfg.LLM_MODEL = args.text_model
-    if getattr(args, "text_variant", None):
-        cfg.LLM_VARIANT = args.text_variant
+    if getattr(args, "no_thinking", False):
+        cfg.VLM_VARIANT = cfg.LLM_VARIANT = ""
+    else:
+        if getattr(args, "vlm_variant", None) is not None:
+            cfg.VLM_VARIANT = cfg.normalize_variant(args.vlm_variant)
+        if getattr(args, "text_variant", None) is not None:
+            cfg.LLM_VARIANT = cfg.normalize_variant(args.text_variant)
     if getattr(args, "opencode_port", None) is not None:
         cfg.OPENCODE_SERVER_PORT = args.opencode_port
 
@@ -121,13 +133,17 @@ def pipeline_model_flags() -> list[str]:
     """Effective model settings as pipeline.py CLI flags.
 
     Forwarded to every pipeline subprocess so it runs with the same models
-    this process resolved, whether they came from defaults or CLI overrides.
+    this process resolved, whether from defaults or CLI overrides. A disabled
+    (empty) variant is forwarded as the ``none`` sentinel so the subprocess
+    also omits it rather than falling back to its own default.
     """
+    vlm_v = getattr(cfg, "VLM_VARIANT", None)
+    txt_v = getattr(cfg, "LLM_VARIANT", None)
     flags = [
         "--vlm-model", cfg.VLM_MODEL,
-        "--vlm-variant", getattr(cfg, "VLM_VARIANT", None) or "low",
+        "--vlm-variant", vlm_v if vlm_v else "none",
         "--text-model", getattr(cfg, "LLM_MODEL", cfg.VLM_MODEL),
-        "--text-variant", getattr(cfg, "LLM_VARIANT", None) or "high",
+        "--text-variant", txt_v if txt_v else "none",
     ]
     if cfg.OPENCODE_SERVER_PORT:
         flags += ["--opencode-port", str(cfg.OPENCODE_SERVER_PORT)]

@@ -9,18 +9,32 @@ import os
 from pathlib import Path
 
 
+# Variant values meaning "this model has no reasoning/thinking level" — the
+# variant field is then omitted from opencode requests. Custom models that
+# expose no thinking arg (e.g. agnes/agnes-2.0-flash) need this.
+_VARIANT_DISABLED = {"", "none", "off", "no", "disable", "disabled"}
+
+
+def normalize_variant(value: str | None) -> str:
+    """Return "" (variant omitted) for a disabled/blank value, else the value."""
+    if value is None:
+        return ""
+    v = value.strip()
+    return "" if v.lower() in _VARIANT_DISABLED else v
+
+
 # OpenCode vision model. Frame analysis needs no deep reasoning, so thinking
 # stays at the lowest effort the model exposes ("low" — opencode has no
 # fully-off variant).
 VLM_MODEL = os.environ.get("VLM_MODEL", "opencode/mimo-v2.5-free")
-VLM_VARIANT = os.environ.get("VLM_VARIANT", "") or "low"
+VLM_VARIANT = normalize_variant(os.environ.get("VLM_VARIANT", "")) or "low"
 OPENCODE_SERVER_PORT = int(os.environ.get("OPENCODE_SERVER_PORT", "0") or 0)
 
 # OpenCode text model used for fusion, queries, and web crosschecking.
 # Text-LLM work defaults to the highest reasoning effort the opencode free
 # models expose ("high"). Env vars / CLI flags override both variants.
 LLM_MODEL = os.environ.get("LLM_MODEL", VLM_MODEL)
-LLM_VARIANT = os.environ.get("LLM_VARIANT", "") or "high"
+LLM_VARIANT = normalize_variant(os.environ.get("LLM_VARIANT", "")) or "high"
 
 
 # FunASR model paths. Local model directories take precedence over model IDs.

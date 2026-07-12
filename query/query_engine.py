@@ -7,18 +7,19 @@ cannot drift into separate command implementations.
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 from utils.retry import RetryConfig, retry_sync
 
 _QUERY_RETRY = RetryConfig(max_attempts=4, base_delay_s=2.0, max_delay_s=20.0)
 log = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are a video-understanding assistant. Answer only from
-the supplied video context, which may include transcripts, slide text, chart
-descriptions, and visual summaries. State clearly when the context is
-insufficient. Reply in the user's language and cite relevant video timestamps
-when they are available."""
+SYSTEM_PROMPT = """You are a video-understanding assistant. Answer only from \
+the supplied video context (transcripts, slide text, chart descriptions, \
+visual summaries); say when it is insufficient. Reply in the user's language \
+and cite video timestamps when available."""
 
 
 class QueryEngine:
@@ -42,15 +43,21 @@ class QueryEngine:
         prompt = (
             f"{_format_context(hits)}\n\n"
             f"Request: {question}\n\n"
-            "If this is a specific question, answer it directly and precisely. "
-            "If it names a broad topic, write a thorough briefing instead, "
-            "covering all relevant details, examples, caveats, and visual "
-            "material in the supplied context."
+            "Answer a specific question directly and precisely; for a broad "
+            "topic, write a thorough briefing covering the relevant details, "
+            "examples, caveats, and visual material in the context."
         )
         return self._llm(prompt, max_tokens=1200)
 
     def summarize(self, style: str = "comprehensive") -> str:
-        """Create a headline, brief, or comprehensive video summary."""
+        """Create a headline, brief, or comprehensive video summary.
+
+        Parameterless per style, so the result is cached in the project dir;
+        repeat calls cost no model engagement until the video is reprocessed.
+        """
+        cached = self._cache_get(f"summary:{style}")
+        if cached is not None:
+            return cached
         sampled = _sample_segments(self.db.get_all_segments(), max_tokens_budget=6000)
         context = "\n\n".join(
             f"[{segment.get('start_ts', '??:??')}] {segment.get('fused_summary', '')}"
@@ -61,24 +68,35 @@ class QueryEngine:
             "brief": "Write a concise 3-5 sentence overview.",
             "comprehensive": "Write a structured, comprehensive summary of the main topics, evidence, and conclusions.",
         }
-        return self._llm(
+        result = self._llm(
             f"VIDEO TIMELINE:\n{context}\n\n{instructions.get(style, instructions['comprehensive'])}",
             max_tokens=1500,
         )
+        self._cache_put(f"summary:{style}", result)
+        return result
 
     def get_topic_outline(self) -> str:
-        """Build an outline from indexed slide changes when available."""
+        """Build an outline from indexed slide changes when available.
+
+        Parameterless, so the result is cached like :meth:`summarize`.
+        """
+        cached = self._cache_get("outline")
+        if cached is not None:
+            return cached
         slides = self.db.get_slide_index()
         if not slides:
-            return self.ask("What are the main topics covered in this video?")
-        slide_list = "\n".join(
-            f"[{slide['timestamp']}] {slide['slide_title'] or '(no title)'}"
-            for slide in slides
-        )
-        return self._llm(
-            "Create a clear topic outline from these slide changes. Show the progression "
-            f"of the presentation.\n\nSLIDE TIMELINE:\n{slide_list}"
-        )
+            result = self.ask("What are the main topics covered in this video?")
+        else:
+            slide_list = "\n".join(
+                f"[{slide['timestamp']}] {slide['slide_title'] or '(no title)'}"
+                for slide in slides
+            )
+            result = self._llm(
+                "Create a clear topic outline from these slide changes. Show the progression "
+                f"of the presentation.\n\nSLIDE TIMELINE:\n{slide_list}"
+            )
+        self._cache_put("outline", result)
+        return result
 
     def query_at_time(self, timestamp_ms: int, question: str) -> str:
         """Answer a question about the segment containing a timestamp."""
@@ -91,6 +109,40 @@ class QueryEngine:
 
     def get_full_transcript(self) -> str:
         return self.db.get_full_transcript()
+
+    # ── parameterless-result cache (stored inside the project dir) ─────
+
+    def _cache_file(self) -> Path:
+        return Path(self.db.db_dir) / "query_cache.json"
+
+    def _cache_load(self) -> dict:
+        """Load the cache, dropping it when the video was reprocessed."""
+        try:
+            data = json.loads(self._cache_file().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(data, dict) or data.get("_segments") != self.db.count():
+            return {}
+        return data
+
+    def _cache_get(self, key: str) -> str | None:
+        value = self._cache_load().get(key)
+        if value is not None:
+            log.info("query cache hit: %s", key)
+        return value
+
+    def _cache_put(self, key: str, value: str) -> None:
+        if not value or value.startswith("[LLM error"):
+            return  # never cache failures
+        data = self._cache_load()
+        data["_segments"] = self.db.count()
+        data[key] = value
+        try:
+            self._cache_file().write_text(
+                json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8"
+            )
+        except OSError as exc:
+            log.warning("query cache write failed: %s", exc)
 
     def _llm(self, prompt: str, max_tokens: int = 800) -> str:
         variant = getattr(self.cfg, "LLM_VARIANT", None)

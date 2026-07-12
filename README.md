@@ -7,7 +7,7 @@ A comprehensive video analysis system that transforms lecture/recording videos i
 - **Speech-to-Text**: FunASR (paraformer-zh) for Chinese-native transcription with timestamps
 - **Visual Analysis**: VLM frame analysis + RapidOCR (ONNX) for slide content extraction
 - **Semantic Search**: ChromaDB vector store for knowledge retrieval
-- **Web Fact-Checking**: Crosscheck claims against web sources via DDGS
+- **Agentic Web Fact-Checking**: Crosscheck claims with an OpenCode agent that searches and reads web sources
 - **Interactive CLI**: Query processed videos with natural language
 
 ## Requirements
@@ -15,7 +15,6 @@ A comprehensive video analysis system that transforms lecture/recording videos i
 - Python 3.10+
 - ffmpeg (for audio extraction)
 - [opencode](https://opencode.ai) CLI (for VLM/LLM inference, free built-in models)
-- LM Studio (optional, for standalone `query.py`)
 - CUDA-capable GPU recommended
 
 ## Installation
@@ -40,12 +39,15 @@ Configuration is via `config.py` or environment variables:
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
 | `VLM_MODEL` | `opencode/mimo-v2.5-free` | Vision model (opencode provider) |
-| `VLM_VARIANT` | (none) | Reasoning variant (low/medium/high/max) |
+| `VLM_VARIANT` | `low` | VLM reasoning variant (low/medium/high) — kept minimal for frame analysis |
 | `OPENCODE_SERVER_PORT` | `0` (random) | opencode server port |
-| `VLM_LLM_MODEL` | same as VLM_MODEL | Model for fusion text-LLM |
-| `LLM_BASE_URL` | `http://127.0.0.1:1235/v1` | LM Studio endpoint (standalone query.py) |
-| `LLM_API_KEY` | `lm-studio` | LM Studio API key |
-| `LLM_MODEL` | `qwen3.5-4b` | LM Studio language model |
+| `VLM_LLM_MODEL` | same as VLM_MODEL | OpenCode text model for fusion, queries, and crosschecks |
+| `VLM_LLM_VARIANT` | `high` | Text-model reasoning variant (low/medium/high) — highest effort for LLM work |
+
+`/crosscheck` starts the project-local `web-crosscheck` OpenCode agent. It is
+restricted to `websearch` and `webfetch`; the server enables Exa web search via
+`OPENCODE_ENABLE_EXA=1` automatically. The selected OpenCode model must support
+tool calling.
 
 ### FunASR (Speech-to-Text)
 
@@ -88,9 +90,6 @@ Configuration is via `config.py` or environment variables:
 | `VLM_MAX_TOKENS` | `512` | VLM max output tokens |
 | `VLM_TEMPERATURE` | `0.1` | VLM temperature |
 | `VLM_CALL_TIMEOUT_S` | `120` | VLM HTTP call timeout |
-| `LLM_CALL_TIMEOUT_S` | `60` | LLM fusion/query timeout |
-| `LLM_MAX_TOKENS_FUSION` | `512` | LLM max tokens for fusion |
-| `LLM_TEMPERATURE_FUSION` | `0.2` | LLM temperature for fusion |
 
 ### Retry Configuration
 
@@ -120,9 +119,9 @@ Configuration is via `config.py` or environment variables:
 CLI overrides (highest priority):
 
 ```bash
-python cli.py video.mp4 --vlm-model opencode/mimo-v2.5-free --llm-model qwen3.5-4b
-python pipeline.py URL --llm-model qwen3.5-4b
-python query.py ./video_db/project --model qwen3.5-4b
+python cli.py video.mp4 --vlm-model opencode/mimo-v2.5-free --text-model opencode/mimo-v2.5-free
+python pipeline.py URL --text-model opencode/mimo-v2.5-free
+python query.py ./video_db/project --text-model opencode/mimo-v2.5-free --ask "What is the main topic?"
 ```
 
 ## Usage
@@ -145,11 +144,11 @@ python pipeline.py video.mp4 --force  # Force reprocessing
 ### Query a Processed Video
 
 ```bash
-# Interactive REPL
+# Interactive project session
 python cli.py
-python query.py ./video_db/my_lecture
+python cli.py ./video_db/my_lecture
 
-# One-shot queries
+# One-shot query wrapper
 python query.py ./video_db/my_lecture --ask "What is the main topic?"
 python query.py ./video_db/my_lecture --summary
 python query.py ./video_db/my_lecture --at 05:30 --question "What slide is shown?"
@@ -170,16 +169,13 @@ Inside a project:
 
 | Command | Description |
 |---------|-------------|
-| `/summary` | Comprehensive summary |
-| `/headline` | One-line headline |
-| `/brief` | 3-5 sentence overview |
+| `/summary [style]` | Whole-video summary: comprehensive (default), brief, headline |
 | `/outline` | Topic outline |
 | `/slides` | List slide changes |
 | `/transcript` | Full transcript |
 | `/at MM:SS [q]` | Query at timestamp |
-| `/knowledge <topic>` | Deep extraction |
 | `/crosscheck [n]` | Fact-check top N claims (default 5) |
-| `<any text>` | Semantic search |
+| `<any question>` | Ask anything in natural language (recommended) — direct answers or topic deep dives |
 
 ## Architecture
 

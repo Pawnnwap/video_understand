@@ -1,4 +1,4 @@
-"""cli.py -- workspace shell for the Video Understanding System
+﻿"""cli.py -- workspace shell for the Video Understanding System
 
 Usage:
     python cli.py                    # enter workspace, pick a project
@@ -16,18 +16,15 @@ Workspace commands:
     quit / exit             exit
 
 Project commands (once inside a project):
-    /summary                comprehensive summary
-    /headline               one-line headline
-    /brief                  3-5 sentence overview
+    <question>               ask anything in natural language (recommended)
+    /summary [style]        whole-video summary: comprehensive (default), brief, headline
     /outline                topic outline from slides
     /slides                 list all slide changes with timestamps
     /transcript             full spoken transcript
     /at MM:SS [question]    what was on screen at a specific moment
-    /knowledge <topic>      deep extraction on a topic
     /open <name|#>          switch to a different project
     /help                   show this help
-    /back                   return to workspace prompt
-    /quit                   exit entirely
+    /quit or /back          return to workspace (quit again there to exit)
     <anything else>         semantic search + RAG answer
 """
 
@@ -46,7 +43,6 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
-import importlib.util
 import json
 import logging
 import os
@@ -60,21 +56,8 @@ os.environ["HF_DATASETS_OFFLINE"] = "1"
 
 logging.basicConfig(level=logging.WARNING)   # quiet in interactive mode
 
-# -- resolve query_engine by path to avoid query.py / query/ package shadow --
-_qe_path = Path(__file__).parent / "query" / "query_engine.py"
-_spec = importlib.util.spec_from_file_location("query.query_engine", _qe_path)
-_qe_mod = importlib.util.module_from_spec(_spec)
-sys.modules["query.query_engine"] = _qe_mod
-_spec.loader.exec_module(_qe_mod)
-QueryEngine = _qe_mod.QueryEngine
-_parse_timestamp = _qe_mod._parse_timestamp
-
-_cc_path = Path(__file__).parent / "query" / "crosscheck.py"
-_cc_spec = importlib.util.spec_from_file_location("query.crosscheck", _cc_path)
-_cc_mod  = importlib.util.module_from_spec(_cc_spec)
-sys.modules["query.crosscheck"] = _cc_mod
-_cc_spec.loader.exec_module(_cc_mod)
-crosscheck = _cc_mod.crosscheck
+from query.crosscheck import crosscheck
+from query.query_engine import QueryEngine, _parse_timestamp
 
 
 def _is_video_source(s: str) -> bool:
@@ -182,17 +165,26 @@ def _load_project(db_path: Path):
     return db, engine, llm
 
 
-def _run_pipeline(source: str, vlm_model=None, llm_model=None, vlm_variant=None, opencode_port=None) -> bool:
+def _run_pipeline(
+    source: str,
+    vlm_model: str | None = None,
+    text_model: str | None = None,
+    vlm_variant: str | None = None,
+    text_variant: str | None = None,
+    opencode_port: int | None = None,
+) -> bool:
     """Run pipeline.py on source, inheriting stdio for live output."""
     print(f"\n  Launching pipeline for: {source}")
     print("  (runs in the foreground -- please wait)\n")
     cmd = [sys.executable, str(Path(__file__).parent / "pipeline.py"), source]
     if vlm_model:
         cmd.extend(["--vlm-model", vlm_model])
-    if llm_model:
-        cmd.extend(["--llm-model", llm_model])
+    if text_model:
+        cmd.extend(["--text-model", text_model])
     if vlm_variant:
         cmd.extend(["--vlm-variant", vlm_variant])
+    if text_variant:
+        cmd.extend(["--text-variant", text_variant])
     if opencode_port is not None:
         cmd.extend(["--opencode-port", str(opencode_port)])
     r = subprocess.run(cmd)
@@ -204,30 +196,30 @@ def _run_pipeline(source: str, vlm_model=None, llm_model=None, vlm_variant=None,
 # ---------------------------------------------------------------------------
 
 _HELP_PROJECT = """
-  /summary              comprehensive summary
-  /headline             one-line headline
-  /brief                3-5 sentence overview
+  Ask anything (recommended): type a normal question with no command prefix.
+
+  /summary [style]      whole-video summary: comprehensive (default), brief, headline
   /outline              topic outline from slides
   /slides               all slide changes with timestamps
   /transcript           full spoken transcript
   /at MM:SS [question]  what was on screen at this moment
-  /knowledge <topic>    deep extraction on a topic
   /crosscheck [n]       fact-check top N claims against the web (default 5)
   /open <name|#>        switch to another project
   /help                 show this help
-  /back                 return to workspace
-  /quit                 exit
-  <anything else>       semantic search + RAG answer"""
+  /quit or /back        return to workspace (quit again there to exit)"""
 
 
-def _project_repl(db_path: Path, db_root: Path) -> bool:
+def _project_repl(db_path: Path, db_root: Path) -> tuple[str, Path | None]:
     """Inner REPL for one project.
-    Returns True  -> caller should return to workspace.
-    Returns False -> caller should exit entirely.
+
+    Returns ``("open", path)`` to switch projects, ``("workspace", None)``
+    to return to the workspace, or ``("exit", None)`` to quit.  Keeping the
+    switch request outside this function ensures the current OpenCode server is
+    closed before a replacement project session starts.
     """
     result = _load_project(db_path)
     if result is None:
-        return True
+        return "workspace", None
 
     db, engine, llm = result
     name = db_path.name
@@ -246,7 +238,7 @@ def _project_repl(db_path: Path, db_root: Path) -> bool:
                 raw = input(f"[{short[:35]}] > ").strip()
             except (EOFError, KeyboardInterrupt):
                 print()
-                return False
+                return "exit", None
 
             if not raw:
                 continue
@@ -256,11 +248,10 @@ def _project_repl(db_path: Path, db_root: Path) -> bool:
             rest = parts[1].strip() if len(parts) > 1 else ""
 
             # -- navigation --
-            if cmd in ("/quit", "/exit", "quit", "exit"):
-                return False
-
-            if cmd in ("/back", "/workspace", "back"):
-                return True
+            # quit is staged: inside a project it returns to the workspace;
+            # only the workspace prompt exits the CLI entirely.
+            if cmd in ("/quit", "/exit", "quit", "exit", "/back", "/workspace", "back"):
+                return "workspace", None
 
             if cmd == "/help":
                 print(_HELP_PROJECT)
@@ -272,23 +263,16 @@ def _project_repl(db_path: Path, db_root: Path) -> bool:
                 projects = _list_projects(db_root)
                 target = _resolve_project(rest, projects)
                 if target:
-                    keep_going = _project_repl(target, db_root)
-                    if not keep_going:
-                        return False
-                    return True  # back to workspace after sub-project
+                    return "open", target
 
             # -- query commands --
             elif cmd == "/summary":
-                print("\n[Generating summary...]\n")
-                print(engine.summarize("comprehensive"))
-
-            elif cmd == "/headline":
-                print("\n[Generating headline...]\n")
-                print(engine.summarize("headline"))
-
-            elif cmd == "/brief":
-                print("\n[Generating brief overview...]\n")
-                print(engine.summarize("brief"))
+                style = rest.lower() or "comprehensive"
+                if style not in ("comprehensive", "brief", "headline"):
+                    print("  Usage: /summary [headline|brief]  (default: comprehensive)")
+                else:
+                    print(f"\n[Generating {style} summary...]\n")
+                    print(engine.summarize(style))
 
             elif cmd == "/outline":
                 print("\n[Building outline...]\n")
@@ -317,13 +301,6 @@ def _project_repl(db_path: Path, db_root: Path) -> bool:
                     print(f"\n[Querying at {sub[0]}...]\n")
                     print(engine.query_at_time(ts_ms, q))
 
-            elif cmd == "/knowledge":
-                if not rest:
-                    print("  Usage: /knowledge <topic>")
-                else:
-                    print(f"\n[Extracting knowledge about '{rest}'...]\n")
-                    print(engine.extract_knowledge(rest))
-
             elif cmd == "/crosscheck":
                 try:
                     n = int(rest) if rest else 5
@@ -351,6 +328,21 @@ def _project_repl(db_path: Path, db_root: Path) -> bool:
 #  Workspace-level REPL
 # ---------------------------------------------------------------------------
 
+def _open_project_flow(db_path: Path, db_root: Path) -> bool:
+    """Open a project and process any in-session project switch requests.
+
+    Returns ``False`` only when the user chose to exit the whole CLI.
+    """
+    current = db_path
+    while True:
+        action, target = _project_repl(current, db_root)
+        if action == "exit":
+            return False
+        if action == "open" and target is not None:
+            current = target
+            continue
+        return True
+
 _HELP_WORKSPACE = """
   list / ls                   list all processed projects
   open <name|#>               enter a project
@@ -369,8 +361,7 @@ def _workspace_repl(db_root: Path, open_immediately=None):
     print("=" * 60)
 
     if open_immediately is not None:
-        keep = _project_repl(open_immediately, db_root)
-        if not keep:
+        if not _open_project_flow(open_immediately, db_root):
             return
 
     print(_HELP_WORKSPACE)
@@ -418,8 +409,7 @@ def _workspace_repl(db_root: Path, open_immediately=None):
                     continue
             target = _resolve_project(rest, projects)
             if target:
-                keep = _project_repl(target, db_root)
-                if not keep:
+                if not _open_project_flow(target, db_root):
                     return
 
         elif cmd in ("process", "/process"):
@@ -436,8 +426,7 @@ def _workspace_repl(db_root: Path, open_immediately=None):
             # Bare input: try as project name/number, then as a new video source
             target = _resolve_project(raw, projects)
             if target:
-                keep = _project_repl(target, db_root)
-                if not keep:
+                if not _open_project_flow(target, db_root):
                     return
             elif _is_video_source(raw):
                 # Looks like a BV code / YouTube ID / URL -- process it
@@ -445,8 +434,7 @@ def _workspace_repl(db_root: Path, open_immediately=None):
                 if ok:
                     new_projects = _list_projects(db_root)
                     if new_projects:
-                        keep = _project_repl(new_projects[0], db_root)
-                        if not keep:
+                        if not _open_project_flow(new_projects[0], db_root):
                             return
                 else:
                     print("\n  Pipeline exited with errors.\n")
@@ -461,28 +449,29 @@ def _workspace_repl(db_root: Path, open_immediately=None):
 def main():
     parser = argparse.ArgumentParser(description="Video Understanding CLI")
     parser.add_argument("source", nargs="?", help="Video path, URL, or BV code")
-    parser.add_argument("--llm-base-url", help="LM Studio base URL for the local text LLM")
-    parser.add_argument("--llm-api-key", help="LM Studio API key")
     parser.add_argument("--vlm-model", help="opencode vision model id (default opencode/mimo-v2.5-free)")
-    parser.add_argument("--vlm-variant", help="opencode model variant (low|medium|high|max)")
+    parser.add_argument("--vlm-variant", help="opencode model variant (low|medium|high)")
+    parser.add_argument(
+        "--text-model", "--llm-model", dest="text_model",
+        help="opencode text model for fusion and queries",
+    )
+    parser.add_argument(
+        "--text-variant", "--llm-variant", dest="text_variant",
+        help="opencode text-model reasoning variant (low|medium|high)",
+    )
     parser.add_argument("--opencode-port", type=int, help="Fixed port for the opencode server (0 = random)")
-    parser.add_argument("--llm-model", help="Language model name")
     args = parser.parse_args()
 
-    if args.llm_base_url:
-        cfg.LLM_BASE_URL = args.llm_base_url
-        cfg.LM_STUDIO_BASE_URL = args.llm_base_url
-    if args.llm_api_key:
-        cfg.LLM_API_KEY = args.llm_api_key
-        cfg.LM_STUDIO_API_KEY = args.llm_api_key
     if args.vlm_model:
         cfg.VLM_MODEL = args.vlm_model
     if args.vlm_variant:
         cfg.VLM_VARIANT = args.vlm_variant
+    if args.text_model:
+        cfg.VLM_LLM_MODEL = args.text_model
+    if args.text_variant:
+        cfg.VLM_LLM_VARIANT = args.text_variant
     if args.opencode_port is not None:
         cfg.OPENCODE_SERVER_PORT = args.opencode_port
-    if args.llm_model:
-        cfg.LLM_MODEL = args.llm_model
 
     db_root = Path(cfg.DB_DIR)
 
@@ -501,8 +490,8 @@ def main():
 
         print(f"\n  '{arg}' not found as an existing project -- running pipeline first...")
         ok = _run_pipeline(
-            arg, args.vlm_model, args.llm_model,
-            args.vlm_variant, args.opencode_port,
+            arg, args.vlm_model, args.text_model, args.vlm_variant,
+            args.text_variant, args.opencode_port,
         )
         if ok:
             projects = _list_projects(db_root)

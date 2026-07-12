@@ -7,7 +7,7 @@
 - **语音转文字**: FunASR (paraformer-zh) 中文原生转录，带时间戳
 - **视觉分析**: VLM帧分析 + RapidOCR (ONNX) 幻灯片内容提取
 - **语义搜索**: ChromaDB向量存储用于知识检索
-- **网络核查**: 通过DDGS搜索对视频声明进行网络事实核查
+- **智能体网络核查**: 通过 OpenCode 智能体检索并读取网络来源，对视频声明进行事实核查
 - **交互式CLI**: 自然语言查询已处理视频
 
 ## 系统要求
@@ -15,7 +15,6 @@
 - Python 3.10+
 - ffmpeg（用于音频提取）
 - [opencode](https://opencode.ai) CLI（用于VLM/LLM推理，内置免费模型）
-- LM Studio（可选，用于独立的`query.py`）
 - 推荐CUDA显卡
 
 ## 安装
@@ -40,12 +39,10 @@ pip install -r requirements.txt
 | 环境变量 | 默认值 | 描述 |
 |----------|--------|------|
 | `VLM_MODEL` | `opencode/mimo-v2.5-free` | 视觉模型（opencode提供商） |
-| `VLM_VARIANT` | (无) | 推理变体（low/medium/high/max） |
+| `VLM_VARIANT` | `low` | VLM 推理变体（low/medium/high）—— 帧分析保持最低思考 |
 | `OPENCODE_SERVER_PORT` | `0`（随机） | opencode服务器端口 |
-| `VLM_LLM_MODEL` | 同VLM_MODEL | 融合阶段文本LLM模型 |
-| `LLM_BASE_URL` | `http://127.0.0.1:1235/v1` | LM Studio端点（独立query.py） |
-| `LLM_API_KEY` | `lm-studio` | LM Studio API密钥 |
-| `LLM_MODEL` | `qwen3.5-4b` | LM Studio语言模型 |
+| `VLM_LLM_MODEL` | 同VLM_MODEL | 用于融合、查询和核查的 OpenCode 文本模型 |
+| `VLM_LLM_VARIANT` | `high` | 文本模型推理变体（low/medium/high）—— LLM 工作默认最高思考 |
 
 ### FunASR（语音识别）
 
@@ -88,9 +85,6 @@ pip install -r requirements.txt
 | `VLM_MAX_TOKENS` | `512` | VLM最大输出tokens |
 | `VLM_TEMPERATURE` | `0.1` | VLM温度 |
 | `VLM_CALL_TIMEOUT_S` | `120` | VLM HTTP调用超时 |
-| `LLM_CALL_TIMEOUT_S` | `60` | LLM融合/查询超时 |
-| `LLM_MAX_TOKENS_FUSION` | `512` | LLM融合最大tokens |
-| `LLM_TEMPERATURE_FUSION` | `0.2` | LLM融合温度 |
 
 ### 重试配置
 
@@ -120,9 +114,9 @@ pip install -r requirements.txt
 CLI参数覆盖（最高优先级）：
 
 ```bash
-python cli.py video.mp4 --vlm-model opencode/mimo-v2.5-free --llm-model qwen3.5-4b
-python pipeline.py URL --llm-model qwen3.5-4b
-python query.py ./video_db/project --model qwen3.5-4b
+python cli.py video.mp4 --vlm-model opencode/mimo-v2.5-free --text-model opencode/mimo-v2.5-free
+python pipeline.py URL --text-model opencode/mimo-v2.5-free
+python query.py ./video_db/project --text-model opencode/mimo-v2.5-free --ask "主要话题是什么？"
 ```
 
 ## 使用方法
@@ -145,11 +139,11 @@ python pipeline.py video.mp4 --force  # 强制重新处理
 ### 查询已处理视频
 
 ```bash
-# 交互式REPL
+# 交互式项目会话
 python cli.py
-python query.py ./video_db/my_lecture
+python cli.py ./video_db/my_lecture
 
-# 单次查询
+# 单次查询包装器
 python query.py ./video_db/my_lecture --ask "主要话题是什么？"
 python query.py ./video_db/my_lecture --summary
 python query.py ./video_db/my_lecture --at 05:30 --question "显示什么幻灯片？"
@@ -170,16 +164,13 @@ python query.py ./video_db/my_lecture --at 05:30 --question "显示什么幻灯�
 
 | 命令 | 描述 |
 |------|------|
-| `/summary` | 综合摘要 |
-| `/headline` | 一行标题 |
-| `/brief` | 3-5句概述 |
+| `/summary [style]` | 全视频摘要：comprehensive（默认）、brief、headline |
 | `/outline` | 主题大纲 |
 | `/slides` | 列出幻灯片变化 |
 | `/transcript` | 完整转录 |
 | `/at MM:SS [问题]` | 时间戳查询 |
-| `/knowledge <主题>` | 深度提取 |
-| `/crosscheck [n]` | 网络事实核查（默认5条） |
-| `<任意文本>` | 语义搜索 |
+| `/crosscheck [n]` | 使用 OpenCode 智能体进行网络事实核查（默认5条） |
+| `<任意问题>` | 自然语言提问（推荐）—— 具体问题直接回答，宽泛主题自动深度解读 |
 
 ## 架构
 

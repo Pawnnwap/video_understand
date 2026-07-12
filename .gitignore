@@ -9,7 +9,8 @@ downloads/
 .vscode/
 # super-opencode
 .archive
-.opencode
+.opencode/*
+!.opencode/opencode.json
 .ruff_cache
 nul
 test_*.py

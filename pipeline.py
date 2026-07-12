@@ -1,4 +1,4 @@
-"""pipeline.py — orchestrator
+﻿"""pipeline.py — orchestrator
 The single entry point. Given a video file, runs all phases and
 produces a queryable VideoDatabase.
 
@@ -72,12 +72,6 @@ def build_vlm():
     )
 
 
-def build_llm_client():
-    """Instantiate the OpenAI-compatible client for the LOCAL text LLM (LM Studio)."""
-    from openai import OpenAI
-    return OpenAI(base_url=cfg.LLM_BASE_URL, api_key=cfg.LLM_API_KEY)
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 #  Main pipeline
 # ─────────────────────────────────────────────────────────────────────────────
@@ -115,7 +109,6 @@ def run_pipeline(video_path: str, force_reprocess: bool = False):
     vlm = build_vlm()
     log.info(f"VLM  (opencode): model={cfg.VLM_MODEL}  variant={getattr(cfg, 'VLM_VARIANT', None)}")
     log.info(f"LLM  (opencode pure mode for Phase-3 fusion): model={getattr(cfg, 'VLM_LLM_MODEL', cfg.VLM_MODEL)}  variant={getattr(cfg, 'VLM_LLM_VARIANT', None)}")
-    log.info(f"Query LLM (local LM Studio): {cfg.LLM_BASE_URL}  model={cfg.LLM_MODEL}")
     duration = get_video_duration(video_path)
     log.info(f"Video duration: {duration:.1f}s  |  Output dir: {db_dir}")
 
@@ -199,35 +192,36 @@ def main():
     parser.add_argument("--force", action="store_true", help="Force full reprocessing")
     parser.add_argument("--query", action="store_true", help="Launch interactive query REPL after processing")
     parser.add_argument("--vlm-model", help="opencode vision model id (default opencode/mimo-v2.5-free)")
-    parser.add_argument("--vlm-variant", help="opencode model variant (low|medium|high|max)")
+    parser.add_argument("--vlm-variant", help="opencode model variant (low|medium|high)")
+    parser.add_argument(
+        "--text-model", "--llm-model", dest="text_model",
+        help="opencode text model for fusion and queries",
+    )
+    parser.add_argument(
+        "--text-variant", "--llm-variant", dest="text_variant",
+        help="opencode text-model reasoning variant (low|medium|high)",
+    )
     parser.add_argument("--opencode-port", type=int, help="Fixed port for the opencode server (0 = random)")
-    parser.add_argument("--llm-base-url", help="LM Studio base URL for the local text LLM")
-    parser.add_argument("--llm-api-key", help="LM Studio API key")
-    parser.add_argument("--llm-model", help="Language model name")
     args = parser.parse_args()
 
     if args.vlm_model:
         cfg.VLM_MODEL = args.vlm_model
     if args.vlm_variant:
         cfg.VLM_VARIANT = args.vlm_variant
+    if args.text_model:
+        cfg.VLM_LLM_MODEL = args.text_model
+    if args.text_variant:
+        cfg.VLM_LLM_VARIANT = args.text_variant
     if args.opencode_port is not None:
         cfg.OPENCODE_SERVER_PORT = args.opencode_port
-    if args.llm_base_url:
-        cfg.LLM_BASE_URL = args.llm_base_url
-        cfg.LM_STUDIO_BASE_URL = args.llm_base_url
-    if args.llm_api_key:
-        cfg.LLM_API_KEY = args.llm_api_key
-        cfg.LM_STUDIO_API_KEY = args.llm_api_key
-    if args.llm_model:
-        cfg.LLM_MODEL = args.llm_model
 
     db = run_pipeline(args.video, force_reprocess=args.force)
 
     if args.query:
-        from query.query_engine import QueryEngine
-        llm_client = build_llm_client()
-        engine = QueryEngine(db, llm_client, cfg)
-        engine.repl()
+        # Reuse the complete project session from cli.py instead of keeping a
+        # second, divergent REPL here.
+        from cli import _workspace_repl
+        _workspace_repl(Path(cfg.DB_DIR), open_immediately=db.db_dir)
 
 
 if __name__ == "__main__":

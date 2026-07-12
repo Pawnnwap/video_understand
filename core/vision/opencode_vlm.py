@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import os
 import shutil
 import subprocess
 import time
@@ -26,8 +27,18 @@ _REQUEST_TIMEOUT_S = 180
 
 
 def _find_opencode_binary() -> str:
-    """Locate the opencode executable (npm global .cmd on Windows)."""
-    for name in ("opencode", "opencode.cmd", "opencode.exe"):
+    """Locate the actual OpenCode executable, avoiding an npm shell shim."""
+    if os.name == "nt":
+        # ``opencode`` resolves to npm's extensionless shell shim on Windows.
+        # Killing that shim leaves its ``opencode.exe serve`` child orphaned,
+        # so prefer the executable installed alongside the global npm command.
+        shim = shutil.which("opencode.cmd")
+        if shim:
+            bundled = Path(shim).parent / "node_modules" / "opencode-ai" / "bin" / "opencode.exe"
+            if bundled.is_file():
+                return str(bundled)
+
+    for name in ("opencode.exe", "opencode.cmd", "opencode"):
         p = shutil.which(name)
         if p:
             return p
@@ -83,12 +94,19 @@ class OpencodeVLM:
         if self._port:
             args += ["--port", str(self._port)]
         log.info(f"Starting opencode server: {' '.join(args)}")
+        # Exa-backed web search is opt-in for non-OpenCode providers.  Set it
+        # on the server process so the web-crosscheck agent always receives
+        # both built-in websearch and webfetch tools.
+        env = os.environ.copy()
+        env["OPENCODE_ENABLE_EXA"] = "1"
         self._proc = subprocess.Popen(
             args,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             encoding="utf-8",
             errors="replace",
+            cwd=str(Path(__file__).resolve().parents[2]),
+            env=env,
         )
         self._base_url = self._wait_health()
         log.info(f"opencode server ready at {self._base_url}")
@@ -173,7 +191,12 @@ class OpencodeVLM:
 
     # ── text-only LLM call (pure mode, no image) ───────────────────────
 
-    def call_text(self, prompt: str, variant: str | None = None) -> str:
+    def call_text(
+        self,
+        prompt: str,
+        variant: str | None = None,
+        agent: str | None = None,
+    ) -> str:
         """Send a text-only message — no image attachment — for "pure mode"
         summarisation.  A fresh session is created per call so each segment
         fusion runs with a clean context (no prior prompt bleeding in).
@@ -186,6 +209,8 @@ class OpencodeVLM:
         v = variant if variant is not None else self._text_variant
         if v:
             body["variant"] = v
+        if agent:
+            body["agent"] = agent
         r = self._client.post(
             f"{self._base_url}/session/{sid}/message",
             json=body,

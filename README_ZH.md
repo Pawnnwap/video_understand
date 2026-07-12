@@ -41,8 +41,8 @@ pip install -r requirements.txt
 | `VLM_MODEL` | `opencode/mimo-v2.5-free` | 视觉模型（opencode提供商） |
 | `VLM_VARIANT` | `low` | VLM 推理变体（low/medium/high）—— 帧分析保持最低思考 |
 | `OPENCODE_SERVER_PORT` | `0`（随机） | opencode服务器端口 |
-| `VLM_LLM_MODEL` | 同VLM_MODEL | 用于融合、查询和核查的 OpenCode 文本模型 |
-| `VLM_LLM_VARIANT` | `high` | 文本模型推理变体（low/medium/high）—— LLM 工作默认最高思考 |
+| `LLM_MODEL` | 同VLM_MODEL | 用于融合、查询和核查的 OpenCode 文本模型 |
+| `LLM_VARIANT` | `high` | 文本模型推理变体（low/medium/high）—— LLM 工作默认最高思考 |
 
 ### FunASR（语音识别）
 

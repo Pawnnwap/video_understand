@@ -93,7 +93,7 @@ class QueryEngine:
         return self.db.get_full_transcript()
 
     def _llm(self, prompt: str, max_tokens: int = 800) -> str:
-        variant = getattr(self.cfg, "VLM_LLM_VARIANT", None)
+        variant = getattr(self.cfg, "LLM_VARIANT", None)
 
         def _call() -> str:
             payload = f"{SYSTEM_PROMPT}\n\n---\n\n{prompt}"

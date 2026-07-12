@@ -41,8 +41,8 @@ Configuration is via `config.py` or environment variables:
 | `VLM_MODEL` | `opencode/mimo-v2.5-free` | Vision model (opencode provider) |
 | `VLM_VARIANT` | `low` | VLM reasoning variant (low/medium/high) — kept minimal for frame analysis |
 | `OPENCODE_SERVER_PORT` | `0` (random) | opencode server port |
-| `VLM_LLM_MODEL` | same as VLM_MODEL | OpenCode text model for fusion, queries, and crosschecks |
-| `VLM_LLM_VARIANT` | `high` | Text-model reasoning variant (low/medium/high) — highest effort for LLM work |
+| `LLM_MODEL` | same as VLM_MODEL | OpenCode text model for fusion, queries, and crosschecks |
+| `LLM_VARIANT` | `high` | Text-model reasoning variant (low/medium/high) — highest effort for LLM work |
 
 `/crosscheck` starts the project-local `web-crosscheck` OpenCode agent. It is
 restricted to `websearch` and `webfetch`; the server enables Exa web search via

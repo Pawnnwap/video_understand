@@ -44,9 +44,9 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.text_model:
-        cfg.VLM_LLM_MODEL = args.text_model
+        cfg.LLM_MODEL = args.text_model
     if args.text_variant:
-        cfg.VLM_LLM_VARIANT = args.text_variant
+        cfg.LLM_VARIANT = args.text_variant
 
     db_path = Path(args.db_dir)
     if not db_path.is_dir() or not (db_path / "transcript.json").exists():

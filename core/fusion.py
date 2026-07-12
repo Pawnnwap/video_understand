@@ -138,7 +138,7 @@ def fuse(sentences, analyses, llm, cfg, lang: str = "zh") -> list[FusedSegment]:
             def _call_llm():
                 return llm.call_text(
                     prompt,
-                    variant=getattr(cfg, "VLM_LLM_VARIANT", None),
+                    variant=getattr(cfg, "LLM_VARIANT", None),
                 )
             seg.fused_summary = retry_sync(_call_llm, cfg=_FUSION_RETRY, label=f"fusion_llm_seg{sid}")
         except Exception as e:

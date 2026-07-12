@@ -78,9 +78,9 @@ def _build_llm():
     """
     from core.vision.opencode_vlm import OpencodeVLM
     return OpencodeVLM(
-        model=getattr(cfg, "VLM_LLM_MODEL", cfg.VLM_MODEL),
+        model=getattr(cfg, "LLM_MODEL", cfg.VLM_MODEL),
         port=cfg.OPENCODE_SERVER_PORT,
-        variant=getattr(cfg, "VLM_LLM_VARIANT", None),
+        variant=getattr(cfg, "LLM_VARIANT", None),
     )
 
 
@@ -467,9 +467,9 @@ def main():
     if args.vlm_variant:
         cfg.VLM_VARIANT = args.vlm_variant
     if args.text_model:
-        cfg.VLM_LLM_MODEL = args.text_model
+        cfg.LLM_MODEL = args.text_model
     if args.text_variant:
-        cfg.VLM_LLM_VARIANT = args.text_variant
+        cfg.LLM_VARIANT = args.text_variant
     if args.opencode_port is not None:
         cfg.OPENCODE_SERVER_PORT = args.opencode_port
 

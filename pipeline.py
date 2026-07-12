@@ -67,8 +67,8 @@ def build_vlm():
         model=cfg.VLM_MODEL,
         port=getattr(cfg, "OPENCODE_SERVER_PORT", 0) or 0,
         variant=getattr(cfg, "VLM_VARIANT", None),
-        text_model=getattr(cfg, "VLM_LLM_MODEL", cfg.VLM_MODEL),
-        text_variant=getattr(cfg, "VLM_LLM_VARIANT", None),
+        text_model=getattr(cfg, "LLM_MODEL", cfg.VLM_MODEL),
+        text_variant=getattr(cfg, "LLM_VARIANT", None),
     )
 
 
@@ -108,7 +108,7 @@ def run_pipeline(video_path: str, force_reprocess: bool = False):
     db_dir = make_db_dir(video_path, cfg.DB_DIR)
     vlm = build_vlm()
     log.info(f"VLM  (opencode): model={cfg.VLM_MODEL}  variant={getattr(cfg, 'VLM_VARIANT', None)}")
-    log.info(f"LLM  (opencode pure mode for Phase-3 fusion): model={getattr(cfg, 'VLM_LLM_MODEL', cfg.VLM_MODEL)}  variant={getattr(cfg, 'VLM_LLM_VARIANT', None)}")
+    log.info(f"LLM  (opencode pure mode for Phase-3 fusion): model={getattr(cfg, 'LLM_MODEL', cfg.VLM_MODEL)}  variant={getattr(cfg, 'LLM_VARIANT', None)}")
     duration = get_video_duration(video_path)
     log.info(f"Video duration: {duration:.1f}s  |  Output dir: {db_dir}")
 
@@ -209,9 +209,9 @@ def main():
     if args.vlm_variant:
         cfg.VLM_VARIANT = args.vlm_variant
     if args.text_model:
-        cfg.VLM_LLM_MODEL = args.text_model
+        cfg.LLM_MODEL = args.text_model
     if args.text_variant:
-        cfg.VLM_LLM_VARIANT = args.text_variant
+        cfg.LLM_VARIANT = args.text_variant
     if args.opencode_port is not None:
         cfg.OPENCODE_SERVER_PORT = args.opencode_port
 

@@ -9,8 +9,23 @@ log = logging.getLogger(__name__)
 
 
 class LocalEmbeddingFunction:
+    """Embeds text with a local SentenceTransformer, loaded lazily.
+
+    The model weights are only loaded on the first actual embed call, which
+    ChromaDB triggers on ``add()``/``query()``. Query paths that read the
+    timeline JSON (summary, crosscheck) never embed, so they skip the load
+    entirely — no wasted weight-loading when only building a report.
+    """
+
     def __init__(self, model_name: str):
+        self._model_name = model_name
+        self._model = None
+
+    def _get_model(self):
+        if self._model is not None:
+            return self._model
         import os
+        model_name = self._model_name
         local_dir = self._resolve_local(model_name)
         from sentence_transformers import SentenceTransformer
         log.info(f"Loading embedding model: {local_dir or model_name} ...")
@@ -40,6 +55,7 @@ class LocalEmbeddingFunction:
             finally:
                 os.environ.update(saved)
         log.info(f"Embedding model ready: {local_dir or model_name}")
+        return self._model
 
     @staticmethod
     def _resolve_local(model_name: str):
@@ -56,7 +72,7 @@ class LocalEmbeddingFunction:
         return "local-sentence-transformer"
 
     def _encode(self, input: list[str]) -> list[list[float]]:
-        return self._model.encode(input, show_progress_bar=False).tolist()
+        return self._get_model().encode(input, show_progress_bar=False).tolist()
 
     def embed_documents(self, input: list[str]) -> list[list[float]]:
         return self._encode(input)

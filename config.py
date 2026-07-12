@@ -19,8 +19,8 @@ OPENCODE_SERVER_PORT = int(os.environ.get("OPENCODE_SERVER_PORT", "0") or 0)
 # OpenCode text model used for fusion, queries, and web crosschecking.
 # Text-LLM work defaults to the highest reasoning effort the opencode free
 # models expose ("high"). Env vars / CLI flags override both variants.
-VLM_LLM_MODEL = os.environ.get("VLM_LLM_MODEL", VLM_MODEL)
-VLM_LLM_VARIANT = os.environ.get("VLM_LLM_VARIANT", "") or "high"
+LLM_MODEL = os.environ.get("LLM_MODEL", VLM_MODEL)
+LLM_VARIANT = os.environ.get("LLM_VARIANT", "") or "high"
 
 
 # FunASR model paths. Local model directories take precedence over model IDs.
@@ -77,6 +77,10 @@ RETRY_MAX_DELAY_S = 30.0
 RETRY_JITTER_FACTOR = 0.25
 
 FUSION_SEGMENT_SIZE = 5
+
+# Crosscheck agent idle timeout: aborted only after this many seconds with NO
+# session activity. Every observed event (tool call, streamed text) resets it.
+CROSSCHECK_IDLE_TIMEOUT_S = int(os.environ.get("CROSSCHECK_IDLE_TIMEOUT_S", "300"))
 
 DOWNLOAD_MAX_DURATION_SEC = 0
 

@@ -11,10 +11,13 @@ import ast
 import json
 import logging
 import re
+import sys
+import time
 
 log = logging.getLogger(__name__)
 
 _WEB_CROSSCHECK_AGENT = "web-crosscheck"
+_PROGRESS_BAR_WIDTH = 24
 
 _EXTRACT_PROMPT_EN = """\
 Below is the video content timeline:
@@ -215,16 +218,68 @@ Claims to research:
 """
 
 
+def _make_progress_renderer(total_claims: int):
+    """Build a single-line progress renderer bound to the claim count.
+
+    Bar fill = verdict sections the agent has started writing (parsed from the
+    streamed text as ``## Claim N``); before the first verdict the agent is in
+    its research phase, shown via the spinner, last tool call, and counters.
+    """
+
+    def render(stats: dict) -> None:
+        seen = re.findall(r"##\s*Claim\s+(\d+)", stats.get("text_tail", ""))
+        done = min(max((int(s) for s in seen), default=0), total_claims)
+        filled = int(_PROGRESS_BAR_WIDTH * done / total_claims) if total_claims else 0
+        bar = "#" * filled + "." * (_PROGRESS_BAR_WIDTH - filled)
+        spinner = "|/-\\"[int(stats.get("elapsed_s", 0) * 2) % 4]
+        elapsed = int(stats.get("elapsed_s", 0))
+        line = (
+            f"  [{bar}] {spinner} claim {done or '-'}/{total_claims}"
+            f" | tools {stats.get('tools', 0)}"
+            f" | {elapsed // 60}:{elapsed % 60:02d}"
+            f" | idle {int(stats.get('idle_s', 0))}s"
+            f" | {stats.get('last_tool', '')}"
+        )
+        sys.stdout.write("\r" + line[:110].ljust(110))
+        sys.stdout.flush()
+
+    return render
+
+
 def _run_web_crosscheck_agent(engine, pairs: list[dict], lang: str) -> str:
-    """Run a fresh OpenCode agent session with web tools enabled."""
-    variant = getattr(engine.cfg, "VLM_LLM_VARIANT", None)
+    """Run a fresh OpenCode agent session with web tools enabled.
+
+    Progress is polled from the session; each new event redraws the activity
+    bar AND resets the idle timeout, so a busy agent can run indefinitely
+    while a stalled one is aborted.
+    """
+    variant = getattr(engine.cfg, "LLM_VARIANT", None)
+    idle_timeout_s = getattr(engine.cfg, "CROSSCHECK_IDLE_TIMEOUT_S", 300)
+    prompt = _research_prompt(pairs, lang)
+    started = time.time()
     try:
+        if hasattr(engine.llm, "call_text_monitored"):
+            result = engine.llm.call_text_monitored(
+                prompt,
+                variant=variant,
+                agent=_WEB_CROSSCHECK_AGENT,
+                on_progress=_make_progress_renderer(len(pairs)),
+                idle_timeout_s=idle_timeout_s,
+            )
+            print()  # end the \r progress line
+            return result
         return engine.llm.call_text(
-            _research_prompt(pairs, lang),
-            variant=variant,
-            agent=_WEB_CROSSCHECK_AGENT,
+            prompt, variant=variant, agent=_WEB_CROSSCHECK_AGENT
+        )
+    except TimeoutError as exc:
+        print()
+        log.error("crosscheck: %s", exc)
+        return (
+            f"Web crosscheck aborted: no agent activity for {idle_timeout_s:.0f}s "
+            f"(ran {time.time() - started:.0f}s total). Partial work discarded."
         )
     except Exception as exc:
+        print()
         log.exception("crosscheck: OpenCode web agent failed")
         return (
             "Web crosscheck could not run. Ensure OpenCode is available and "

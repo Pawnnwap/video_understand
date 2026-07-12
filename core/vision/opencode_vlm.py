@@ -14,6 +14,7 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -223,6 +224,129 @@ class OpencodeVLM:
             if p.get("type") == "text"
         ]
         return "\n".join(texts).strip() if texts else ""
+
+    def call_text_monitored(
+        self,
+        prompt: str,
+        variant: str | None = None,
+        agent: str | None = None,
+        on_progress=None,
+        idle_timeout_s: float = 300,
+        poll_interval_s: float = 2.0,
+    ) -> str:
+        """``call_text`` with activity monitoring for long agent runs.
+
+        The message POST runs in a worker thread with no read timeout.  This
+        thread polls ``GET /session/{id}/message``; any growth in messages,
+        parts, tool calls, or streamed text counts as progress, invokes
+        ``on_progress(stats)``, and resets the idle timer.  If the session
+        produces nothing for ``idle_timeout_s`` seconds it is aborted via
+        ``POST /session/{id}/abort`` and TimeoutError is raised.
+        """
+        sid = self._create_session()
+        body: dict = {
+            "model": {"providerID": self._text_provider, "modelID": self._text_model},
+            "parts": [{"type": "text", "text": prompt}],
+        }
+        v = variant if variant is not None else self._text_variant
+        if v:
+            body["variant"] = v
+        if agent:
+            body["agent"] = agent
+
+        outcome: dict = {}
+
+        def _post():
+            try:
+                outcome["response"] = self._client.post(
+                    f"{self._base_url}/session/{sid}/message",
+                    json=body,
+                    timeout=httpx.Timeout(connect=10, read=None, write=30, pool=30),
+                )
+            except Exception as exc:
+                outcome["error"] = exc
+
+        worker = threading.Thread(target=_post, daemon=True)
+        worker.start()
+
+        started = last_activity = time.time()
+        signature = None
+        stats = {"messages": 0, "parts": 0, "tools": 0, "text_chars": 0}
+        while worker.is_alive():
+            worker.join(poll_interval_s)
+            now = time.time()
+            current = self._session_stats(sid)
+            if current is not None and (sig := tuple(sorted(current.items()))) != signature:
+                signature = sig
+                last_activity = now
+                stats = current
+            stats["elapsed_s"] = now - started
+            stats["idle_s"] = now - last_activity
+            if on_progress:
+                on_progress(dict(stats))
+            if now - last_activity > idle_timeout_s:
+                try:
+                    self._client.post(f"{self._base_url}/session/{sid}/abort", json={})
+                except Exception:
+                    pass
+                worker.join(5)
+                raise TimeoutError(
+                    f"opencode session made no progress for {idle_timeout_s:.0f}s"
+                )
+
+        if "error" in outcome:
+            raise outcome["error"]
+        r = outcome["response"]
+        r.raise_for_status()
+        data = r.json()
+        texts = [p["text"] for p in data.get("parts", []) if p.get("type") == "text"]
+        return "\n".join(texts).strip() if texts else ""
+
+    def _session_stats(self, sid: str) -> dict | None:
+        """Snapshot activity counters for a session; None when the poll fails."""
+        try:
+            r = self._client.get(
+                f"{self._base_url}/session/{sid}/message", timeout=10
+            )
+            r.raise_for_status()
+            messages = r.json()
+        except Exception:
+            return None
+        if not isinstance(messages, list):
+            return None
+        parts = tools = text_chars = 0
+        last_tool = ""
+        text_accum: list[str] = []
+        for message in messages:
+            role = (message.get("info") or {}).get("role") or message.get("role")
+            if role == "user":
+                continue  # the prompt echo must not count as agent progress
+            for part in (message.get("parts") or []):
+                parts += 1
+                kind = part.get("type")
+                if kind == "tool":
+                    tools += 1
+                    state = part.get("state") or {}
+                    inputs = state.get("input") or {}
+                    target = inputs.get("url") or inputs.get("query") or ""
+                    last_tool = (
+                        f"{part.get('tool', '?')}"
+                        f"[{state.get('status', '?')}] {target}"
+                    )[:70]
+                elif kind == "reasoning":
+                    text_chars += len(part.get("text", "") or "")
+                elif kind == "text":
+                    text = part.get("text", "") or ""
+                    text_chars += len(text)
+                    text_accum.append(text)
+        return {
+            "messages": len(messages),
+            "parts": parts,
+            "tools": tools,
+            "text_chars": text_chars,
+            "last_tool": last_tool,
+            "text_tail": "".join(text_accum)[-4000:],
+        }
 
     # ── cleanup ───────────────────────────────────────────────────────
 

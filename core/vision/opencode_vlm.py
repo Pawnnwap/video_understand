@@ -84,7 +84,10 @@ class OpencodeVLM:
         self._base_url: str | None = None
         self._proc: subprocess.Popen | None = None
         self._session_id: str | None = None
-        self._client = httpx.Client(timeout=_REQUEST_TIMEOUT_S)
+        # The client only talks to the local opencode server. Ignore proxy
+        # environment variables so VPN toggles or unsupported proxy schemes
+        # (for example socks://...) cannot break localhost requests.
+        self._client = httpx.Client(timeout=_REQUEST_TIMEOUT_S, trust_env=False)
         self._start()
 
     # ── server lifecycle ──────────────────────────────────────────────
@@ -122,7 +125,7 @@ class OpencodeVLM:
             if self._proc and self._proc.poll() is not None:
                 raise RuntimeError("opencode server exited unexpectedly")
             try:
-                r = httpx.get(f"{base}/api/health", timeout=2)
+                r = httpx.get(f"{base}/api/health", timeout=2, trust_env=False)
                 if r.status_code == 200:
                     return base
             except Exception:
@@ -376,4 +379,3 @@ class OpencodeVLM:
 
     def __exit__(self, *exc):
         self.close()
-

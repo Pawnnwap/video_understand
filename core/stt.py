@@ -205,13 +205,16 @@ def _load_funasr_model(cfg):
 
     def _try_load(dev):
         log.info(f"Loading FunASR '{cfg.FUNASR_MODEL}' on {dev} ...")
-        return AutoModel(
-            model=cfg.FUNASR_MODEL,
-            vad_model=cfg.FUNASR_VAD_MODEL,
-            punc_model=cfg.FUNASR_PUNC_MODEL,
-            device=dev,
-            disable_update=True,
-        )
+        kwargs = {
+            "model": cfg.FUNASR_MODEL,
+            "device": dev,
+            "disable_update": True,
+        }
+        if getattr(cfg, "FUNASR_VAD_MODEL", ""):
+            kwargs["vad_model"] = cfg.FUNASR_VAD_MODEL
+        if getattr(cfg, "FUNASR_PUNC_MODEL", ""):
+            kwargs["punc_model"] = cfg.FUNASR_PUNC_MODEL
+        return AutoModel(**kwargs)
 
     try:
         return _try_load(device)

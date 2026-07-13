@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
+import math
 from dataclasses import asdict
 from pathlib import Path
 
@@ -31,11 +33,12 @@ class LocalEmbeddingFunction:
         log.info(f"Loading embedding model: {local_dir or model_name} ...")
         if local_dir:
             saved = {}
-            for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_ENDPOINT"):
+            for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE", "HF_ENDPOINT"):
                 if k in os.environ:
                     saved[k] = os.environ.pop(k)
             saved.setdefault("HF_HUB_OFFLINE", None)
             saved.setdefault("TRANSFORMERS_OFFLINE", None)
+            saved.setdefault("HF_DATASETS_OFFLINE", None)
             os.environ["HF_HUB_OFFLINE"] = "1"
             os.environ["TRANSFORMERS_OFFLINE"] = "1"
             try:
@@ -47,11 +50,17 @@ class LocalEmbeddingFunction:
         else:
             os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
             saved = {}
-            for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+            for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE"):
                 if k in os.environ:
                     saved[k] = os.environ.pop(k)
             try:
                 self._model = SentenceTransformer(model_name)
+            except Exception as e:
+                log.warning(
+                    "SentenceTransformer load failed (%s); using deterministic hash embeddings.",
+                    e,
+                )
+                self._model = _HashEmbeddingModel()
             finally:
                 os.environ.update(saved)
         log.info(f"Embedding model ready: {local_dir or model_name}")
@@ -72,7 +81,8 @@ class LocalEmbeddingFunction:
         return "local-sentence-transformer"
 
     def _encode(self, input: list[str]) -> list[list[float]]:
-        return self._get_model().encode(input, show_progress_bar=False).tolist()
+        embeddings = self._get_model().encode(input, show_progress_bar=False)
+        return embeddings.tolist() if hasattr(embeddings, "tolist") else embeddings
 
     def embed_documents(self, input: list[str]) -> list[list[float]]:
         return self._encode(input)
@@ -82,6 +92,30 @@ class LocalEmbeddingFunction:
 
     def __call__(self, input: list[str]) -> list[list[float]]:
         return self._encode(input)
+
+
+class _HashEmbeddingModel:
+    """Small offline fallback with a SentenceTransformer-like encode method."""
+
+    dim = 384
+
+    def encode(self, input: list[str], show_progress_bar: bool = False) -> list[list[float]]:
+        return [self._embed(text) for text in input]
+
+    def _embed(self, text: str) -> list[float]:
+        vec = [0.0] * self.dim
+        chars = [c for c in text.lower() if not c.isspace()]
+        tokens = text.lower().split()
+        features = tokens or chars
+        if chars:
+            features.extend("".join(chars[i : i + 2]) for i in range(max(0, len(chars) - 1)))
+        for feature in features:
+            digest = hashlib.blake2b(feature.encode("utf-8"), digest_size=8).digest()
+            bucket = int.from_bytes(digest[:4], "little") % self.dim
+            sign = 1.0 if digest[4] & 1 else -1.0
+            vec[bucket] += sign
+        norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+        return [v / norm for v in vec]
 
 
 class VideoDatabase:

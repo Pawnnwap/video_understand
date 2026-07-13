@@ -9,6 +9,24 @@ import os
 from pathlib import Path
 
 
+def _normalize_proxy_env() -> None:
+    """Make common VPN proxy env vars acceptable to httpx-based libraries."""
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        value = os.environ.get(key, "")
+        if value.lower().startswith("socks://"):
+            os.environ[key] = "socks5://" + value[len("socks://"):]
+
+
+_normalize_proxy_env()
+
+
 # Variant values meaning "this model has no reasoning/thinking level" — the
 # variant field is then omitted from opencode requests. Custom models that
 # expose no thinking arg (e.g. agnes/agnes-2.0-flash) need this.
@@ -52,10 +70,10 @@ def _funasr_path(env_key: str, default_name: str) -> str:
 
 FUNASR_MODEL = _funasr_path(
     "FUNASR_MODEL",
-    "speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+    "paraformer-zh",
 )
-FUNASR_VAD_MODEL = _funasr_path("FUNASR_VAD_MODEL", "speech_fsmn_vad_zh-cn-16k-common-pytorch")
-FUNASR_PUNC_MODEL = _funasr_path("FUNASR_PUNC_MODEL", "punc_ct-transformer_cn-en-common-vocab471067-large")
+FUNASR_VAD_MODEL = _funasr_path("FUNASR_VAD_MODEL", "fsmn-vad")
+FUNASR_PUNC_MODEL = _funasr_path("FUNASR_PUNC_MODEL", "")
 FUNASR_DEVICE = os.environ.get("FUNASR_DEVICE", "cuda")
 FUNASR_LANGUAGE = os.environ.get("FUNASR_LANGUAGE", "zh")
 STT_SENTENCE_SPLIT_GAP_MS = int(os.environ.get("STT_SENTENCE_SPLIT_GAP_MS", "500"))
@@ -119,4 +137,4 @@ DOWNLOAD_MAX_DURATION_SEC = 0
 
 DB_DIR = str((Path(__file__).parent / "video_db").resolve())
 CHROMA_COLLECTION = "segments"
-EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "models/paraphrase-multilingual-MiniLM-L12-v2")
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")

@@ -29,6 +29,13 @@ _REQUEST_TIMEOUT_S = 180
 
 def _find_opencode_binary() -> str:
     """Locate the actual OpenCode executable, avoiding an npm shell shim."""
+    env_bin = os.environ.get("OPENCODE_BIN")
+    if env_bin:
+        p = Path(env_bin).expanduser()
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p)
+        raise FileNotFoundError(f"OPENCODE_BIN is set but not executable: {env_bin}")
+
     if os.name == "nt":
         # ``opencode`` resolves to npm's extensionless shell shim on Windows.
         # Killing that shim leaves its ``opencode.exe serve`` child orphaned,

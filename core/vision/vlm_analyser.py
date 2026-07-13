@@ -76,8 +76,10 @@ class FrameAnalysis:
 #  Track A — RapidOCR inline (GPU via onnxruntime CUDAExecutionProvider)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_ocr_tls = threading.local()  # one RapidOCR engine per worker thread
+_ocr_tls = threading.local()  # one RapidOCR engine per worker thread/device mode
 _ocr_available: bool | None = None
+_ocr_gpu_disabled = False
+_ocr_state_lock = threading.Lock()
 
 
 def _torch_lib_dir() -> str | None:
@@ -95,9 +97,13 @@ def _torch_lib_dir() -> str | None:
         return None
 
 
-def _get_ocr_engine(cfg):
-    """Lazily build one RapidOCR engine per thread (CUDA if available)."""
-    engine = getattr(_ocr_tls, "engine", None)
+def _get_ocr_engine(cfg, *, use_gpu: bool | None = None):
+    """Lazily build one RapidOCR engine per thread and device mode."""
+    global _ocr_gpu_disabled
+    requested_gpu = bool(getattr(cfg, "OCR_USE_GPU", True)) if use_gpu is None else bool(use_gpu)
+    actual_gpu = requested_gpu and not _ocr_gpu_disabled
+    attr = "gpu_engine" if actual_gpu else "cpu_engine"
+    engine = getattr(_ocr_tls, attr, None)
     if engine is not None:
         return engine
     import os as _os
@@ -105,13 +111,12 @@ def _get_ocr_engine(cfg):
     if lib:
         _os.environ["PATH"] = lib + _os.pathsep + _os.environ.get("PATH", "")
     from rapidocr_onnxruntime import RapidOCR
-    use_gpu = bool(getattr(cfg, "OCR_USE_GPU", True))
     engine = RapidOCR(
-        det_use_cuda=use_gpu, cls_use_cuda=use_gpu, rec_use_cuda=use_gpu,
+        det_use_cuda=actual_gpu, cls_use_cuda=actual_gpu, rec_use_cuda=actual_gpu,
     )
-    _ocr_tls.engine = engine
+    setattr(_ocr_tls, attr, engine)
     log.info(
-        f"RapidOCR engine ready (use_gpu={use_gpu}, thread={threading.current_thread().name})"
+        f"RapidOCR engine ready (use_gpu={actual_gpu}, thread={threading.current_thread().name})"
     )
     return engine
 
@@ -120,28 +125,59 @@ def _check_ocr_available(cfg=None) -> bool:
     global _ocr_available
     if _ocr_available is not None:
         return _ocr_available
+    cfg = cfg if cfg is not None else _DummyCfg()
     try:
-        _get_ocr_engine(cfg) if cfg is not None else _get_ocr_engine(_DummyCfg())
+        _get_ocr_engine(cfg)
         _ocr_available = True
-        log.info("RapidOCR probe OK -- OCR track enabled (GPU).")
+        mode = "GPU" if bool(getattr(cfg, "OCR_USE_GPU", True)) and not _ocr_gpu_disabled else "CPU"
+        log.info(f"RapidOCR probe OK -- OCR track enabled ({mode}).")
     except Exception as e:
-        _ocr_available = False
-        log.warning(f"RapidOCR probe failed -- OCR track disabled: {e}")
+        if bool(getattr(cfg, "OCR_USE_GPU", True)):
+            log.warning(f"RapidOCR GPU probe failed; retrying OCR on CPU: {e}")
+            try:
+                _disable_ocr_gpu()
+                _get_ocr_engine(cfg, use_gpu=False)
+                _ocr_available = True
+                log.info("RapidOCR probe OK -- OCR track enabled (CPU fallback).")
+            except Exception as cpu_e:
+                _ocr_available = False
+                log.warning(f"RapidOCR CPU probe failed -- OCR track disabled: {cpu_e}")
+        else:
+            _ocr_available = False
+            log.warning(f"RapidOCR probe failed -- OCR track disabled: {e}")
     return _ocr_available
 
 
 class _DummyCfg:
     OCR_USE_GPU = True
+    OCR_GPU_MAX_WORKERS = 1
+
+
+def _disable_ocr_gpu() -> None:
+    global _ocr_gpu_disabled
+    with _ocr_state_lock:
+        if not _ocr_gpu_disabled:
+            _ocr_gpu_disabled = True
+            log.warning("RapidOCR CUDA OOM detected; falling back to CPU OCR for the rest of this run.")
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    text = " ".join(str(arg) for arg in getattr(exc, "args", ()) if arg)
+    text = f"{type(exc).__name__}: {exc} {text}".lower()
+    return (
+        ("cuda" in text and ("out of memory" in text or "cuda failure 2" in text))
+        or "failed to allocate memory" in text
+        or "bfcarena::allocaterawinternal" in text
+    )
 
 
 def run_ocr(frame_path: Path, cfg) -> tuple[str, list[str]]:
-    """Run RapidOCR inline on the persistent GPU engine.  Returns (full_text, lines)."""
+    """Run RapidOCR; fall back from CUDA to CPU on ONNXRuntime OOM."""
     if not _check_ocr_available(cfg):
         return "", []
-    engine = _get_ocr_engine(cfg)
     min_conf = float(getattr(cfg, "OCR_MIN_CONFIDENCE", 0.6))
 
-    def _run() -> list[str]:
+    def _run_with_engine(engine) -> list[str]:
         result = engine(str(frame_path))
         # RapidOCR 1.4.x returns (list_of_[box, text, score], timings_list)
         items = result[0] if result and len(result) >= 1 else []
@@ -158,10 +194,20 @@ def run_ocr(frame_path: Path, cfg) -> tuple[str, list[str]]:
         return lines
 
     try:
-        lines = retry_sync(_run, cfg=_OCR_RETRY, label="rapidocr")
+        engine = _get_ocr_engine(cfg)
+        lines = retry_sync(lambda: _run_with_engine(engine), cfg=_OCR_RETRY, label="rapidocr")
         return "\n".join(lines), lines
     except Exception as e:
-        log.error(f"OCR failed for {frame_path.name}: {e}")
+        if bool(getattr(cfg, "OCR_USE_GPU", True)) and _is_cuda_oom(e):
+            _disable_ocr_gpu()
+            try:
+                cpu_engine = _get_ocr_engine(cfg, use_gpu=False)
+                lines = retry_sync(lambda: _run_with_engine(cpu_engine), cfg=_OCR_RETRY, label="rapidocr_cpu")
+                return "\n".join(lines), lines
+            except Exception as cpu_e:
+                log.warning(f"OCR CPU fallback failed for {frame_path.name}: {cpu_e}")
+                return "", []
+        log.warning(f"OCR failed for {frame_path.name}: {e}")
         return "", []
 
 
@@ -269,7 +315,11 @@ _VALID_DELTAS = frozenset(("same", "slide_change", "new_content", "major_change"
 
 def _ocr_worker_count(cfg) -> int:
     fraction = float(getattr(cfg, "OCR_PARALLEL_FRACTION", 0.9))
-    return max(1, int((os.cpu_count() or 4) * fraction))
+    workers = max(1, int((os.cpu_count() or 4) * fraction))
+    if bool(getattr(cfg, "OCR_USE_GPU", True)) and not _ocr_gpu_disabled:
+        gpu_cap = max(1, int(getattr(cfg, "OCR_GPU_MAX_WORKERS", 1)))
+        workers = min(workers, gpu_cap)
+    return workers
 
 
 def analyse_all_frames(

@@ -68,6 +68,7 @@ tool calling.
 | `OCR_MODEL_NAME` | `PP-OCRv5_mobile` | OCR model name (informational) |
 | `OCR_LANG` | `ch` | OCR language |
 | `OCR_USE_GPU` | `True` | Use GPU for OCR (onnxruntime CUDA) |
+| `OCR_GPU_MAX_WORKERS` | `1` | Max concurrent GPU OCR workers; keep low to avoid ONNXRuntime CUDA OOM |
 | `OCR_MIN_CONFIDENCE` | `0.6` | Minimum confidence threshold |
 | `OCR_TIMEOUT_S` | `60` | OCR subprocess timeout |
 | `OCR_RICH_TEXT_MIN_LINES` | `3` | Min lines for rich text detection |
@@ -243,7 +244,7 @@ video_summarize/
 
 **LM Studio connection failed**: Verify LM Studio is running and model loaded.
 
-**RapidOCR fails**: Set `OCR_USE_GPU=False` if no CUDA or onnxruntime-gpu issues.
+**RapidOCR fails**: Set `OCR_USE_GPU=False` if no CUDA or onnxruntime-gpu issues. If GPU memory is tight, keep `OCR_GPU_MAX_WORKERS=1` or lower `OCR_PARALLEL_FRACTION`; CUDA OOM falls back to CPU automatically.
 
 ## License
 

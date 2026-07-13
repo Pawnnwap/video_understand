@@ -119,6 +119,9 @@ STT_SENTENCE_SPLIT_GAP_MS = int(os.environ.get("STT_SENTENCE_SPLIT_GAP_MS", "500
 OCR_MODEL_NAME = "PP-OCRv5_mobile"
 OCR_LANG = "ch"
 OCR_USE_GPU = True
+# Each RapidOCR worker owns ONNXRuntime sessions. Keep GPU OCR serialized by
+# default to avoid CUDA allocator/stream OOM; CPU fallback still runs on demand.
+OCR_GPU_MAX_WORKERS = int(os.environ.get("OCR_GPU_MAX_WORKERS", "1"))
 OCR_MIN_CONFIDENCE = 0.6
 OCR_TIMEOUT_S = 60
 

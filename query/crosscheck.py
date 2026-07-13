@@ -15,10 +15,31 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 log = logging.getLogger(__name__)
+
+
+class _ClaimItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    claim: str = Field(min_length=6)
+    evidence: str = ""
+
+    @field_validator("claim", "evidence", mode="before")
+    @classmethod
+    def _coerce_text(cls, value: Any) -> str:
+        return "" if value is None else str(value).strip()
+
+
+class _ClaimEnvelope(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    claims: list[_ClaimItem] = Field(default_factory=list)
+
 
 _WEB_CROSSCHECK_AGENT = "web-crosscheck"
 _PROGRESS_BAR_WIDTH = 24
@@ -82,43 +103,108 @@ _PROBE_USER_AGENT = (
 )
 
 _EXTRACT_PROMPT_EN = """\
-Below is the video content timeline:
+Below is a video timeline. It may contain rough transcript text, OCR text, or
+empty/partial summaries. Use all available text, especially transcript text.
 
 {timeline}
 
-Identify the {n} most important factual claims made in this video.
-For each claim provide:
-  - claim: the specific factual assertion, phrased for web research
-  - evidence: the supporting evidence or reasoning given in the video
+Task: identify the {n} most important checkable factual claims made or cited in
+this video. A factual claim can be a statistic, market/economic assertion,
+named-person viewpoint, institutional claim, historical/social observation, or
+causal statement that a web researcher could verify or challenge.
 
-Output ONLY a JSON array, with no prose or code fences:
-[{{"claim": "...", "evidence": "..."}}]
+Extraction rules:
+- Prefer claims with concrete nouns, numbers, named people/institutions, dates,
+  markets, social groups, or causal relationships.
+- It is OK if the video presents a claim as the speaker's view or as another
+  person's view; phrase it as "the video says/cites ..." when needed.
+- Do not reject claims merely because the transcript is informal or lacks a
+  polished summary.
+- Output an empty claims array ONLY if the timeline is purely greeting/filler
+  and contains no checkable factual assertion.
+- Do not invent facts not present in the timeline.
+
+Output exactly one JSON object and no prose/code fences:
+{{"claims": [{{"claim": "...", "evidence": "..."}}]}}
 """
 
 _EXTRACT_PROMPT_ZH = """\
-以下是视频内容时间线：
+以下是视频时间线。内容可能包含粗糙转写、OCR 文字，或为空/不完整的摘要。
+请使用所有可用文本，尤其是 transcript/转写内容。
 
 {timeline}
 
-请识别其中最重要的 {n} 个事实性声明。每项包含：
-  - claim: 适合用于网络检索的具体事实断言
-  - evidence: 视频中给出的依据或论证
+任务：识别视频中最重要的 {n} 个可核查事实性声明。事实性声明可以是统计数字、
+市场/经济判断、具名人物观点、机构相关说法、历史/社会观察，或可由网络资料验证
+或反驳的因果判断。
 
-只输出 JSON 数组，不要输出其他文字或代码块：
-[{{"claim": "...", "evidence": "..."}}]
+抽取规则：
+- 优先抽取包含具体名词、数字、具名人物/机构、时间、市场、社会群体或因果关系的声明。
+- 如果视频是在引用他人观点，也可以抽取；必要时写成“视频称/引用……”。
+- 不要因为转写口语化、摘要为空或表达不够正式，就判定没有声明。
+- 只有当时间线几乎全是问候/闲聊且没有任何可核查事实断言时，才输出空 claims 数组。
+- 不要编造时间线中没有的信息。
+
+只输出一个 JSON 对象，不要输出其他文字或代码块：
+{{"claims": [{{"claim": "...", "evidence": "..."}}]}}
 """
 
-_RETRY_PROMPT = """\
-Reformat the following response as a valid JSON array only. Preserve the
-claims and evidence; do not add commentary or code fences.
+_FORMATTER_PROMPT_EN = """\
+You are a strict JSON formatter for a fact-checking pipeline.
 
-Response to reformat:
+Input A is the original video timeline. Input B is a previous claim-extraction
+attempt that may contain malformed JSON, prose, markdown, or incomplete output.
+Recover up to {n} factual claims that are explicitly present in Input A, using
+Input B only as a hint. If Input B is unusable, re-extract from Input A.
+
+Rules:
+- Output exactly one JSON object and nothing else.
+- Shape: {{"claims": [{{"claim": "...", "evidence": "..."}}]}}
+- JSON string safety is mandatory: inside claim/evidence values, do not use ASCII double quote characters. Use Chinese corner quotes 「...」 or paraphrase quoted phrases.
+- claim must be a concrete factual assertion suitable for web research.
+- evidence must quote or summarize the video basis with timestamp context when possible.
+- Do not include opinions without checkable factual content.
+- Do not invent facts not present in the timeline.
+- If no checkable factual claim exists, output {{"claims": []}}.
+
+Input A timeline:
+---
+{timeline}
+---
+
+Input B previous extraction:
 ---
 {raw}
 ---
+"""
 
-Required shape:
-[{{"claim": "...", "evidence": "..."}}]
+_FORMATTER_PROMPT_ZH = """\
+你是事实核查流程中的严格 JSON 格式化器。
+
+输入 A 是原始视频时间线。输入 B 是上一次声明抽取结果，可能包含格式错误的
+JSON、普通文字、Markdown 或不完整输出。请恢复最多 {n} 个在输入 A 中明确出现
+的事实性声明；输入 B 只能作为线索。如果输入 B 不可用，请直接从输入 A 重新抽取。
+
+规则：
+- 只输出一个 JSON 对象，不要输出任何其他文字。
+- JSON 字符串安全是硬性要求：claim/evidence 的内容里不要使用英文半角双引号。如需引用原话，使用中文引号「...」或改写转述。
+- 只有 JSON 的键名和字符串边界可以使用英文半角双引号。
+- 结构必须是：{{"claims": [{{"claim": "...", "evidence": "..."}}]}}
+- claim 必须是适合网络检索的具体事实断言。
+- evidence 必须引用或概括视频中的依据，尽量带时间线语境。
+- 不要包含缺乏可核查事实内容的纯观点。
+- 不要编造时间线中没有的信息。
+- 如果确实没有可核查事实声明，输出 {{"claims": []}}。
+
+输入 A 时间线：
+---
+{timeline}
+---
+
+输入 B 上次抽取：
+---
+{raw}
+---
 """
 
 
@@ -163,45 +249,114 @@ def _as_claim_list(value) -> list[dict] | None:
     if isinstance(value, list):
         return value
     if isinstance(value, dict):
+        if isinstance(value.get("claims"), list):
+            return value["claims"]
         return next((item for item in value.values() if isinstance(item, list)), None)
     return None
 
 
-def _parse_claim_json(raw: str) -> list[dict] | None:
-    """Accept the common JSON-like formats returned by smaller local models."""
-    text = re.sub(r"```(?:json|JSON)?\s*|\s*```", "", raw).strip()
-    candidates = [text]
-    match = re.search(r"\[[\s\S]*\]", text)
-    if match:
-        candidates.append(match.group())
+def _validate_claims(value) -> list[dict] | None:
+    raw_claims = _as_claim_list(value)
+    if raw_claims is None:
+        return None
+    try:
+        envelope = _ClaimEnvelope.model_validate({"claims": raw_claims})
+    except ValidationError:
+        return None
+    claims = [item.model_dump() for item in envelope.claims if item.claim]
+    return claims or None
 
-    for candidate in candidates:
+
+def _json_repair_loads(candidate: str):
+    try:
+        from json_repair import loads as repair_loads
+    except Exception:
+        return None
+    try:
+        return repair_loads(candidate)
+    except Exception:
+        return None
+
+
+def _parse_claim_json(raw: str) -> list[dict] | None:
+    """Parse, repair, and validate LLM claim JSON."""
+    text = re.sub(r"```(?:json|JSON)?\s*|\s*```", "", raw or "").strip()
+    if not text:
+        return None
+    candidates = [text]
+    obj_match = re.search(r"\{[\s\S]*\}", text)
+    if obj_match:
+        candidates.append(obj_match.group())
+    arr_match = re.search(r"\[[\s\S]*\]", text)
+    if arr_match:
+        candidates.append(arr_match.group())
+
+    for candidate in dict.fromkeys(candidates):
         candidate = re.sub(r",\s*(?=[}\]])", "", candidate)
-        for loader in (json.loads, ast.literal_eval):
+        for loader in (json.loads, ast.literal_eval, _json_repair_loads):
             try:
-                result = _as_claim_list(loader(candidate))
-                if result is not None:
-                    return result
+                parsed = loader(candidate)
             except (json.JSONDecodeError, ValueError, SyntaxError):
                 continue
+            if parsed is None:
+                continue
+            claims = _validate_claims(parsed)
+            if claims is not None:
+                return claims
     return None
+
+
+def _segment_claim_text(segment: dict) -> str:
+    """Return the best available factual text for claim extraction."""
+    fields = (
+        "fused_summary",
+        "transcript",
+        "embedding_text",
+        "scene_description",
+        "diagram_description",
+        "ocr_text",
+    )
+    parts = [str(segment.get(field, "")).strip() for field in fields]
+    return "\n".join(part for part in parts if part)
 
 
 def _extract_claim_pairs(engine, n: int, lang: str) -> list[dict]:
     segments = _sample_segments(engine.db.get_all_segments())
     timeline = "\n\n".join(
         f"[{segment.get('start_ts', '??:??')}] "
-        f"{segment.get('fused_summary', '')}"
+        f"{_segment_claim_text(segment)}"
         for segment in segments
     )
     template = _EXTRACT_PROMPT_ZH if lang == "zh" else _EXTRACT_PROMPT_EN
-    raw = engine._llm(template.format(timeline=timeline, n=n), max_tokens=900)
-    claims = _parse_claim_json(raw)
+    formatter = _FORMATTER_PROMPT_ZH if lang == "zh" else _FORMATTER_PROMPT_EN
 
-    if claims is None:
-        log.warning("crosscheck: claim extraction was not valid JSON; retrying")
-        raw = engine._llm(_RETRY_PROMPT.format(raw=raw), max_tokens=700)
+    claims = None
+    for extract_attempt in range(3):
+        raw = engine._llm(template.format(timeline=timeline, n=n), max_tokens=900)
         claims = _parse_claim_json(raw)
+        if claims:
+            break
+
+        log.warning(
+            "crosscheck: claim extraction attempt %d needs formatter pass",
+            extract_attempt + 1,
+        )
+        for format_attempt in range(3):
+            formatted = engine._llm(
+                formatter.format(timeline=timeline, raw=raw, n=n),
+                max_tokens=900,
+            )
+            claims = _parse_claim_json(formatted)
+            if claims:
+                break
+            log.warning(
+                "crosscheck: formatter pass %d.%d produced no valid claims",
+                extract_attempt + 1,
+                format_attempt + 1,
+            )
+        if claims:
+            break
+
     if not claims:
         return []
 

@@ -19,6 +19,7 @@ A failing item is recorded and the queue moves on to the next one.
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 import time
@@ -58,18 +59,24 @@ def _run_pipeline(source: str) -> bool:
     return subprocess.run(cmd).returncode == 0
 
 
-def _find_new_project(db_root: Path, before: set[Path]) -> Path | None:
-    """Locate the project the pipeline just produced.
+def _find_new_project(db_root: Path, before: set[Path], source: str) -> Path | None:
+    """Locate the project the pipeline just produced or resumed.
 
-    Prefer a directory that did not exist before the run; if the source was
-    already processed (resume/cache), fall back to the most recently touched
-    project.
+    Prefer a directory created by this run. If the source was already cached,
+    match by source token (for example a BV id) before falling back to mtime.
     """
     projects = _list_projects(db_root)
     fresh = [p for p in projects if p not in before]
     if fresh:
         return max(fresh, key=lambda p: p.stat().st_mtime)
-    return projects[0] if projects else None
+
+    tokens = [source, Path(source).stem]
+    tokens.extend(re.findall(r"BV[0-9A-Za-z]+", source))
+    tokens = [t for t in dict.fromkeys(tokens) if t]
+    matched = [p for p in projects if any(t in p.name for t in tokens)]
+    if matched:
+        return max(matched, key=lambda p: p.stat().st_mtime)
+    return max(projects, key=lambda p: p.stat().st_mtime) if projects else None
 
 
 def _build_report(source: str, db_path: Path, crosscheck_n: int) -> str:
@@ -145,7 +152,7 @@ def main() -> None:
             if not _run_pipeline(source):
                 results.append((source, "FAILED: pipeline error"))
                 continue
-            db_path = _find_new_project(db_root, before)
+            db_path = _find_new_project(db_root, before, source)
             if db_path is None:
                 results.append((source, "FAILED: processed project not found"))
                 continue

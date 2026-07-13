@@ -9,6 +9,32 @@ import os
 from pathlib import Path
 
 
+REPO_ROOT = Path(__file__).resolve().parent
+MODEL_ROOT = Path(os.environ.get("VIDEO_UNDERSTAND_MODEL_ROOT", REPO_ROOT / "models")).resolve()
+
+
+def _set_workspace_model_env() -> None:
+    """Keep non-OpenCode model caches inside this workspace by default."""
+    defaults = {
+        "HF_HOME": MODEL_ROOT / "huggingface",
+        "HF_HUB_CACHE": MODEL_ROOT / "huggingface" / "hub",
+        "TRANSFORMERS_CACHE": MODEL_ROOT / "huggingface" / "transformers",
+        "SENTENCE_TRANSFORMERS_HOME": MODEL_ROOT / "sentence-transformers",
+        "TORCH_HOME": MODEL_ROOT / "torch",
+        "MODELSCOPE_CACHE": MODEL_ROOT / "modelscope",
+        "MODELSCOPE_HOME": MODEL_ROOT / "modelscope",
+        "FUNASR_HOME": MODEL_ROOT / "modelscope",
+        "XDG_CACHE_HOME": MODEL_ROOT / "xdg-cache",
+    }
+    for key, path in defaults.items():
+        os.environ.setdefault(key, str(path))
+    for path in defaults.values():
+        Path(path).mkdir(parents=True, exist_ok=True)
+
+
+_set_workspace_model_env()
+
+
 def _normalize_proxy_env() -> None:
     """Make common VPN proxy env vars acceptable to httpx-based libraries."""
     for key in (
@@ -56,22 +82,33 @@ LLM_VARIANT = normalize_variant(os.environ.get("LLM_VARIANT", "")) or "high"
 
 
 # FunASR model paths. Local model directories take precedence over model IDs.
-_FUNASR_LOCAL_ROOT = str(Path(__file__).parent / "models" / "iic")
+_FUNASR_ALIASES = {
+    "paraformer-zh": "iic--speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch/snapshots/master",
+    "fsmn-vad": "iic--speech_fsmn_vad_zh-cn-16k-common-pytorch/snapshots/master",
+    "ct-punc": "iic--punc_ct-transformer_cn-en-common-vocab471067-large/snapshots/master",
+}
 
 
 def _funasr_path(env_key: str, default_name: str) -> str:
-    val = os.environ.get(env_key, "")
+    val = os.environ.get(env_key, "").strip()
     if val and (Path(val).is_absolute() or "/" in val or os.sep in val):
         return val
     name = val or default_name
-    local = Path(_FUNASR_LOCAL_ROOT) / name
-    return str(local) if (local / "model.pt").exists() else name
+    if not name:
+        return ""
+    candidates = []
+    if name in _FUNASR_ALIASES:
+        candidates.append(MODEL_ROOT / "modelscope" / "models" / _FUNASR_ALIASES[name])
+    candidates.append(MODEL_ROOT / "iic" / name)
+    candidates.append(MODEL_ROOT / "modelscope" / "models" / name / "snapshots" / "master")
+    candidates.append(MODEL_ROOT / "modelscope" / "models" / f"iic--{name}" / "snapshots" / "master")
+    for local in candidates:
+        if (local / "model.pt").exists():
+            return str(local)
+    return name
 
 
-FUNASR_MODEL = _funasr_path(
-    "FUNASR_MODEL",
-    "paraformer-zh",
-)
+FUNASR_MODEL = _funasr_path("FUNASR_MODEL", "paraformer-zh")
 FUNASR_VAD_MODEL = _funasr_path("FUNASR_VAD_MODEL", "fsmn-vad")
 FUNASR_PUNC_MODEL = _funasr_path("FUNASR_PUNC_MODEL", "")
 FUNASR_DEVICE = os.environ.get("FUNASR_DEVICE", "cuda")
@@ -135,6 +172,9 @@ CROSSCHECK_MAX_PARALLEL = int(os.environ.get("CROSSCHECK_MAX_PARALLEL", "4"))
 
 DOWNLOAD_MAX_DURATION_SEC = 0
 
-DB_DIR = str((Path(__file__).parent / "video_db").resolve())
+DB_DIR = str((REPO_ROOT / "video_db").resolve())
 CHROMA_COLLECTION = "segments"
-EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")
+EMBEDDING_MODEL = os.environ.get(
+    "EMBEDDING_MODEL",
+    str(MODEL_ROOT / "sentence-transformers" / "paraphrase-multilingual-MiniLM-L12-v2"),
+)

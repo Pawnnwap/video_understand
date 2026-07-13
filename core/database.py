@@ -48,21 +48,27 @@ class LocalEmbeddingFunction:
                     if v is None: os.environ.pop(k, None)
                     else: os.environ[k] = v
         else:
-            os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
-            saved = {}
-            for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE"):
-                if k in os.environ:
-                    saved[k] = os.environ.pop(k)
-            try:
-                self._model = SentenceTransformer(model_name)
-            except Exception as e:
+            if self._looks_like_local_path(model_name):
                 log.warning(
-                    "SentenceTransformer load failed (%s); using deterministic hash embeddings.",
-                    e,
+                    "Local embedding model not found at %s; using deterministic hash embeddings.",
+                    model_name,
                 )
                 self._model = _HashEmbeddingModel()
-            finally:
-                os.environ.update(saved)
+            else:
+                saved = {}
+                for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE"):
+                    if k in os.environ:
+                        saved[k] = os.environ.pop(k)
+                try:
+                    self._model = SentenceTransformer(model_name)
+                except Exception as e:
+                    log.warning(
+                        "SentenceTransformer load failed (%s); using deterministic hash embeddings.",
+                        e,
+                    )
+                    self._model = _HashEmbeddingModel()
+                finally:
+                    os.environ.update(saved)
         log.info(f"Embedding model ready: {local_dir or model_name}")
         return self._model
 
@@ -76,6 +82,12 @@ class LocalEmbeddingFunction:
         if (cand / "config.json").exists() and (cand / "modules.json").exists():
             return str(cand)
         return None
+
+    @staticmethod
+    def _looks_like_local_path(model_name: str) -> bool:
+        from pathlib import Path
+        p = Path(model_name)
+        return p.is_absolute() or any(sep in model_name for sep in ("/", "\\"))
 
     def name(self) -> str:
         return "local-sentence-transformer"

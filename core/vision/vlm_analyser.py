@@ -21,6 +21,7 @@ import collections
 import json
 import logging
 import os
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -151,6 +152,8 @@ def _check_ocr_available(cfg=None) -> bool:
 class _DummyCfg:
     OCR_USE_GPU = True
     OCR_GPU_MAX_WORKERS = 1
+    OCR_MAX_DIM = 1600
+    OCR_RESIZE_QUALITY = 92
 
 
 def _disable_ocr_gpu() -> None:
@@ -171,14 +174,59 @@ def _is_cuda_oom(exc: BaseException) -> bool:
     )
 
 
+def _prepare_ocr_image(frame_path: Path, cfg) -> tuple[Path, Path | None]:
+    """Return an OCR-sized image path and optional temporary file to delete."""
+    max_dim = int(getattr(cfg, "OCR_MAX_DIM", 1600) or 0)
+    if max_dim <= 0:
+        return frame_path, None
+
+    from PIL import Image
+
+    with Image.open(frame_path) as img:
+        width, height = img.size
+        current_max = max(width, height)
+        if current_max <= max_dim:
+            return frame_path, None
+
+        scale = max_dim / current_max
+        resized_size = (max(1, round(width * scale)), max(1, round(height * scale)))
+        resized = img.convert("RGB").resize(resized_size, Image.Resampling.LANCZOS)
+
+        tmp = tempfile.NamedTemporaryFile(
+            prefix=f"{frame_path.stem}_ocr_",
+            suffix=".jpg",
+            delete=False,
+        )
+        tmp_path = Path(tmp.name)
+        tmp.close()
+        quality = int(getattr(cfg, "OCR_RESIZE_QUALITY", 92) or 92)
+        resized.save(tmp_path, "JPEG", quality=quality, optimize=True)
+        log.debug(
+            "Prepared OCR image %s -> %s (%sx%s -> %sx%s)",
+            frame_path.name,
+            tmp_path.name,
+            width,
+            height,
+            resized_size[0],
+            resized_size[1],
+        )
+        return tmp_path, tmp_path
+
+
 def run_ocr(frame_path: Path, cfg) -> tuple[str, list[str]]:
     """Run RapidOCR; fall back from CUDA to CPU on ONNXRuntime OOM."""
     if not _check_ocr_available(cfg):
         return "", []
     min_conf = float(getattr(cfg, "OCR_MIN_CONFIDENCE", 0.6))
+    cleanup_path: Path | None = None
+    try:
+        ocr_path, cleanup_path = _prepare_ocr_image(frame_path, cfg)
+    except Exception as e:
+        log.warning(f"OCR image resize failed for {frame_path.name}; using original frame: {e}")
+        ocr_path = frame_path
 
     def _run_with_engine(engine) -> list[str]:
-        result = engine(str(frame_path))
+        result = engine(str(ocr_path))
         # RapidOCR 1.4.x returns (list_of_[box, text, score], timings_list)
         items = result[0] if result and len(result) >= 1 else []
         lines: list[str] = []
@@ -209,6 +257,12 @@ def run_ocr(frame_path: Path, cfg) -> tuple[str, list[str]]:
                 return "", []
         log.warning(f"OCR failed for {frame_path.name}: {e}")
         return "", []
+    finally:
+        if cleanup_path is not None:
+            try:
+                cleanup_path.unlink(missing_ok=True)
+            except OSError:
+                log.debug("Could not remove temporary OCR image %s", cleanup_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

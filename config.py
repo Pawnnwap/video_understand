@@ -122,6 +122,8 @@ OCR_USE_GPU = True
 # Each RapidOCR worker owns ONNXRuntime sessions. Keep GPU OCR serialized by
 # default to avoid CUDA allocator/stream OOM; CPU fallback still runs on demand.
 OCR_GPU_MAX_WORKERS = int(os.environ.get("OCR_GPU_MAX_WORKERS", "1"))
+OCR_MAX_DIM = int(os.environ.get("OCR_MAX_DIM", "1600"))
+OCR_RESIZE_QUALITY = int(os.environ.get("OCR_RESIZE_QUALITY", "92"))
 OCR_MIN_CONFIDENCE = 0.6
 OCR_TIMEOUT_S = 60
 

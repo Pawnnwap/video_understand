@@ -69,6 +69,8 @@ tool calling.
 | `OCR_LANG` | `ch` | OCR language |
 | `OCR_USE_GPU` | `True` | Use GPU for OCR (onnxruntime CUDA) |
 | `OCR_GPU_MAX_WORKERS` | `1` | Max concurrent GPU OCR workers; keep low to avoid ONNXRuntime CUDA OOM |
+| `OCR_MAX_DIM` | `1600` | Resize OCR input longest side; original frames are unchanged; set 0 to disable |
+| `OCR_RESIZE_QUALITY` | `92` | JPEG quality for temporary resized OCR images |
 | `OCR_MIN_CONFIDENCE` | `0.6` | Minimum confidence threshold |
 | `OCR_TIMEOUT_S` | `60` | OCR subprocess timeout |
 | `OCR_RICH_TEXT_MIN_LINES` | `3` | Min lines for rich text detection |
@@ -244,7 +246,7 @@ video_summarize/
 
 **LM Studio connection failed**: Verify LM Studio is running and model loaded.
 
-**RapidOCR fails**: Set `OCR_USE_GPU=False` if no CUDA or onnxruntime-gpu issues. If GPU memory is tight, keep `OCR_GPU_MAX_WORKERS=1` or lower `OCR_PARALLEL_FRACTION`; CUDA OOM falls back to CPU automatically.
+**RapidOCR fails**: Set `OCR_USE_GPU=False` if no CUDA or onnxruntime-gpu issues. If GPU memory is tight, keep `OCR_GPU_MAX_WORKERS=1`, lower `OCR_MAX_DIM`, or lower `OCR_PARALLEL_FRACTION`; CUDA OOM falls back to CPU automatically.
 
 ## License
 

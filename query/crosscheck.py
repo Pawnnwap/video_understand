@@ -732,6 +732,57 @@ def _probe_connectivity() -> tuple[list[str], list[str], list[str]]:
     )
 
 
+_MD_LINK_RE = re.compile(r"\[[^\]]*\]\((https?://[^)\s]+)\)")
+
+
+def _verify_cited_url(url: str) -> str:
+    """Classify one cited URL: 'ok', 'notfound' (404/410), or 'unresolved'.
+
+    A server response — even 401/403/429 — means the resource exists (it may
+    just bot-block a plain client, which the agent's own webfetch can pass), so
+    only a hard 404/410 or a total connection failure counts against a citation.
+    """
+    try:
+        r = httpx.get(
+            url,
+            timeout=_PROBE_TIMEOUT_S,
+            follow_redirects=True,
+            headers={"User-Agent": _PROBE_USER_AGENT},
+        )
+    except Exception:
+        return "unresolved"
+    return "notfound" if r.status_code in (404, 410) else "ok"
+
+
+def _flag_unresolved_sources(sections: dict[int, str]) -> dict[int, str]:
+    """Probe every cited URL and append a marker to links that do not resolve.
+
+    Non-destructive: a fabricated or dead citation stays visible but clearly
+    flagged, so the verdict's stated evidence is never silently rewritten.
+    """
+    urls = list({m.group(1) for s in sections.values() for m in _MD_LINK_RE.finditer(s)})
+    if not urls:
+        return sections
+    with ThreadPoolExecutor(max_workers=min(len(urls), 12)) as pool:
+        status = dict(zip(urls, pool.map(_verify_cited_url, urls)))
+    reasons = {
+        "unresolved": "did not resolve",
+        "notfound": "page not found (404)",
+    }
+    flagged = sum(1 for v in status.values() if v != "ok")
+    print(f"        Cited-link check: {len(urls) - flagged} resolved, {flagged} unverified.")
+    if not flagged:
+        return sections
+
+    def annotate(line: str) -> str:
+        m = _MD_LINK_RE.search(line)
+        if m and (reason := reasons.get(status.get(m.group(1), "ok"))):
+            return line.rstrip() + f"  [UNVERIFIED LINK: {reason}]"
+        return line
+
+    return {i: "\n".join(annotate(l) for l in s.splitlines()) for i, s in sections.items()}
+
+
 def _run_web_crosscheck_agent(
     engine,
     pairs: list[dict],
@@ -826,6 +877,7 @@ def _run_web_crosscheck_agent(
     if progress:
         print()  # end the \r progress line
 
+    sections = _flag_unresolved_sources(sections)
     body = "\n\n".join(sections[i] for i in sorted(sections))
     language = "Chinese" if lang == "zh" else "English"
     overall = engine._llm(

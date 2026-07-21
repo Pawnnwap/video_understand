@@ -25,7 +25,7 @@ Project commands (once inside a project):
     /open <name|#>          switch to a different project
     /help                   show this help
     /quit or /back          return to workspace (quit again there to exit)
-    <anything else>         semantic search + RAG answer
+    <anything else>         agent reads/searches the video context and answers
 """
 
 from __future__ import annotations

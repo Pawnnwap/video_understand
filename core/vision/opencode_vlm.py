@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import logging
 import os
 import shutil
@@ -24,7 +25,30 @@ log = logging.getLogger(__name__)
 
 _HEALTH_RETRIES = 60
 _HEALTH_INTERVAL_S = 0.5
-_REQUEST_TIMEOUT_S = 180
+# Every model-generating call is idle-monitored — aborted only after a stretch of
+# NO activity, never by a total wall-clock cap on work that is still progressing.
+# Control-plane calls (session create, providers, stats, abort) keep short
+# explicit timeouts since those are not "work in progress".
+_IDLE_TIMEOUT_S = 300
+# An identical failed tool call repeated MORE than this many times force-stops the
+# session (loop guard), independent of the idle timer — the agent is thrashing.
+_LOOP_TOLERANCE = 3
+_CONTROL_TIMEOUT_S = 30
+
+
+class AgentTimeout(TimeoutError):
+    """Raised when a monitored session is force-stopped (idle or loop guard).
+
+    Carries the agent's partial output so callers can salvage a best-effort
+    result instead of discarding the work already done. ``reason`` is ``"idle"``
+    or ``"loop"``.
+    """
+
+    def __init__(self, message: str, partial_text: str = "", last_tool: str = "", reason: str = "idle"):
+        super().__init__(message)
+        self.partial_text = partial_text
+        self.last_tool = last_tool
+        self.reason = reason
 
 
 def _find_opencode_binary() -> str:
@@ -94,7 +118,12 @@ class OpencodeVLM:
         # The client only talks to the local opencode server. Ignore proxy
         # environment variables so VPN toggles or unsupported proxy schemes
         # (for example socks://...) cannot break localhost requests.
-        self._client = httpx.Client(timeout=_REQUEST_TIMEOUT_S, trust_env=False)
+        # No total read timeout — long-but-progressing generations must not be
+        # killed by a wall-clock cap; idleness is enforced per call instead.
+        self._client = httpx.Client(
+            timeout=httpx.Timeout(connect=10, read=None, write=30, pool=30),
+            trust_env=False,
+        )
         self._start()
 
     # ── server lifecycle ──────────────────────────────────────────────
@@ -157,10 +186,52 @@ class OpencodeVLM:
         raise RuntimeError("Could not determine opencode server port")
 
     def _create_session(self) -> str:
-        r = self._client.post(f"{self._base_url}/session", json={})
+        r = self._client.post(f"{self._base_url}/session", json={}, timeout=_CONTROL_TIMEOUT_S)
         r.raise_for_status()
         body = r.json()
         return (body.get("data") or body)["id"]
+
+    def _abort(self, sid: str) -> None:
+        try:
+            self._client.post(f"{self._base_url}/session/{sid}/abort", json={}, timeout=_CONTROL_TIMEOUT_S)
+        except Exception:
+            pass
+
+    def text_model_id(self) -> str:
+        """``provider/model`` id of the configured text model."""
+        return f"{self._text_provider}/{self._text_model}"
+
+    def text_context_limit(self, fallback: int = 128000, overrides: dict | None = None) -> int:
+        """Context-window size (in tokens) of the configured text model.
+
+        Resolution order: an explicit ``overrides`` entry for this model wins
+        (some providers, e.g. agnes, report ``limit 0`` in the catalogue), then
+        the opencode server's ``/config/providers`` catalogue (``limit.context``
+        from models.dev), then ``fallback``. Used to size the short/long
+        threshold so it tracks whichever model is selected.
+        """
+        if overrides and (override := overrides.get(self.text_model_id())):
+            return int(override)
+        try:
+            r = self._client.get(f"{self._base_url}/config/providers", timeout=10)
+            r.raise_for_status()
+            data = r.json()
+        except Exception as exc:
+            log.warning("could not read model context limit (%s); using %d", exc, fallback)
+            return fallback
+        providers = data.get("providers", data) if isinstance(data, dict) else data
+        for provider in providers or []:
+            if provider.get("id") not in (self._text_provider, None):
+                continue
+            model = (provider.get("models") or {}).get(self._text_model)
+            context = ((model or {}).get("limit") or {}).get("context")
+            if context:
+                return int(context)
+        log.warning(
+            "model %s/%s reported no context limit; using %d",
+            self._text_provider, self._text_model, fallback,
+        )
+        return fallback
 
     # ── VLM call ──────────────────────────────────────────────────────
 
@@ -191,18 +262,7 @@ class OpencodeVLM:
         }
         if self._variant:
             body["variant"] = self._variant
-        r = self._client.post(
-            f"{self._base_url}/session/{sid}/message",
-            json=body,
-        )
-        r.raise_for_status()
-        data = r.json()
-        texts = [
-            p["text"]
-            for p in data.get("parts", [])
-            if p.get("type") == "text"
-        ]
-        return "\n".join(texts).strip() if texts else ""
+        return self._post_and_wait(sid, body)
 
     def call_image_file(self, image_path: Path, prompt: str) -> str:
         """Compress a frame image and send it with the prompt."""
@@ -234,18 +294,7 @@ class OpencodeVLM:
             body["variant"] = v
         if agent:
             body["agent"] = agent
-        r = self._client.post(
-            f"{self._base_url}/session/{sid}/message",
-            json=body,
-        )
-        r.raise_for_status()
-        data = r.json()
-        texts = [
-            p["text"]
-            for p in data.get("parts", [])
-            if p.get("type") == "text"
-        ]
-        return "\n".join(texts).strip() if texts else ""
+        return self._post_and_wait(sid, body)
 
     def call_text_monitored(
         self,
@@ -253,17 +302,15 @@ class OpencodeVLM:
         variant: str | None = None,
         agent: str | None = None,
         on_progress=None,
-        idle_timeout_s: float = 300,
+        idle_timeout_s: float = _IDLE_TIMEOUT_S,
         poll_interval_s: float = 2.0,
+        loop_tolerance: int = _LOOP_TOLERANCE,
     ) -> str:
-        """``call_text`` with activity monitoring for long agent runs.
+        """``call_text`` with an ``on_progress`` callback for long agent runs.
 
-        The message POST runs in a worker thread with no read timeout.  This
-        thread polls ``GET /session/{id}/message``; any growth in messages,
-        parts, tool calls, or streamed text counts as progress, invokes
-        ``on_progress(stats)``, and resets the idle timer.  If the session
-        produces nothing for ``idle_timeout_s`` seconds it is aborted via
-        ``POST /session/{id}/abort`` and TimeoutError is raised.
+        Behaviour matches every other call — idle-monitored, loop-guarded, no
+        total timeout — this variant additionally streams progress stats to the
+        caller and lets it tune the idle/loop thresholds.
         """
         sid = self._create_session()
         body: dict = {
@@ -275,7 +322,38 @@ class OpencodeVLM:
             body["variant"] = v
         if agent:
             body["agent"] = agent
+        return self._post_and_wait(
+            sid, body,
+            idle_timeout_s=idle_timeout_s,
+            on_progress=on_progress,
+            poll_interval_s=poll_interval_s,
+            loop_tolerance=loop_tolerance,
+        )
 
+    def _post_and_wait(
+        self,
+        sid: str,
+        body: dict,
+        idle_timeout_s: float = _IDLE_TIMEOUT_S,
+        on_progress=None,
+        poll_interval_s: float = 2.0,
+        loop_tolerance: int = _LOOP_TOLERANCE,
+    ) -> str:
+        """POST one message and wait for the reply under idle + loop guards.
+
+        The POST runs in a worker thread with no read timeout, so a long-but-
+        progressing generation is never killed by a wall-clock cap. This thread
+        polls ``GET /session/{id}/message``; any growth in messages, parts, tool
+        calls, or streamed text counts as progress and resets the idle timer.
+        The session is force-stopped (``POST /session/{id}/abort``, raising
+        :class:`AgentTimeout` carrying the partial output) when either guard
+        trips:
+
+          * idle — no activity at all for ``idle_timeout_s`` seconds; or
+          * loop — an identical failed tool call repeated more than
+            ``loop_tolerance`` times. Thrashing keeps the idle timer alive but
+            makes no real progress, so it needs its own guard.
+        """
         outcome: dict = {}
 
         def _post():
@@ -298,22 +376,32 @@ class OpencodeVLM:
             worker.join(poll_interval_s)
             now = time.time()
             current = self._session_stats(sid)
-            if current is not None and (sig := tuple(sorted(current.items()))) != signature:
-                signature = sig
-                last_activity = now
-                stats = current
+            if current is not None:
+                if (sig := tuple(sorted(current.items()))) != signature:
+                    signature = sig
+                    last_activity = now
+                    stats = current
+                if loop_tolerance and current.get("max_repeated_failure", 0) > loop_tolerance:
+                    self._abort(sid)
+                    worker.join(5)
+                    raise AgentTimeout(
+                        f"repeated a failing tool call more than {loop_tolerance} times",
+                        partial_text=current.get("text_tail", ""),
+                        last_tool=current.get("last_tool", ""),
+                        reason="loop",
+                    )
             stats["elapsed_s"] = now - started
             stats["idle_s"] = now - last_activity
             if on_progress:
                 on_progress(dict(stats))
             if now - last_activity > idle_timeout_s:
-                try:
-                    self._client.post(f"{self._base_url}/session/{sid}/abort", json={})
-                except Exception:
-                    pass
+                self._abort(sid)
                 worker.join(5)
-                raise TimeoutError(
-                    f"opencode session made no progress for {idle_timeout_s:.0f}s"
+                raise AgentTimeout(
+                    f"made no progress for {idle_timeout_s:.0f}s",
+                    partial_text=stats.get("text_tail", ""),
+                    last_tool=stats.get("last_tool", ""),
+                    reason="idle",
                 )
 
         if "error" in outcome:
@@ -339,6 +427,7 @@ class OpencodeVLM:
         parts = tools = text_chars = 0
         last_tool = ""
         text_accum: list[str] = []
+        failed_calls: dict[str, int] = {}  # identical failed tool call -> count
         for message in messages:
             role = (message.get("info") or {}).get("role") or message.get("role")
             if role == "user":
@@ -349,12 +438,14 @@ class OpencodeVLM:
                 if kind == "tool":
                     tools += 1
                     state = part.get("state") or {}
+                    status = state.get("status", "?")
                     inputs = state.get("input") or {}
                     target = inputs.get("url") or inputs.get("query") or ""
-                    last_tool = (
-                        f"{part.get('tool', '?')}"
-                        f"[{state.get('status', '?')}] {target}"
-                    )[:70]
+                    tool_name = part.get("tool", "?")
+                    last_tool = f"{tool_name}[{status}] {target}"[:70]
+                    if status == "error":
+                        key = tool_name + "|" + json.dumps(inputs, sort_keys=True, default=str)
+                        failed_calls[key] = failed_calls.get(key, 0) + 1
                 elif kind == "reasoning":
                     text_chars += len(part.get("text", "") or "")
                 elif kind == "text":
@@ -368,6 +459,7 @@ class OpencodeVLM:
             "text_chars": text_chars,
             "last_tool": last_tool,
             "text_tail": "".join(text_accum)[-4000:],
+            "max_repeated_failure": max(failed_calls.values(), default=0),
         }
 
     # ── cleanup ───────────────────────────────────────────────────────

@@ -1,12 +1,12 @@
 # Video Understanding Pipeline
 
-A comprehensive video analysis system that transforms lecture/recording videos into queryable knowledge bases using speech-to-text, visual analysis, and semantic search.
+A comprehensive video analysis system that transforms lecture/recording videos into queryable knowledge bases using speech-to-text, visual analysis, and agent-driven querying.
 
 ## Features
 
 - **Speech-to-Text**: FunASR (paraformer-zh) for Chinese-native transcription with timestamps
 - **Visual Analysis**: VLM frame analysis + RapidOCR (ONNX) for slide content extraction
-- **Semantic Search**: ChromaDB vector store for knowledge retrieval
+- **Agent-Driven Querying**: no vector database — short videos are fed to the model whole; long videos are searched by a read-only `video-qa` OpenCode agent that greps/reads the video's context files
 - **Agentic Web Fact-Checking**: Crosscheck claims with an OpenCode agent that searches and reads web sources
 - **Interactive CLI**: Query processed videos with natural language
 
@@ -38,11 +38,11 @@ Configuration is via `config.py` or environment variables:
 
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
-| `VLM_MODEL` | `opencode/mimo-v2.5-free` | Vision model (opencode provider) |
+| `VLM_MODEL` | `opencode/mimo-v2.5-free` | Vision model — the only vision job (frame analysis). agnes has no vision, so this stays on mimo |
 | `VLM_VARIANT` | `low` | VLM reasoning variant (low/medium/high) — kept minimal for frame analysis |
 | `OPENCODE_SERVER_PORT` | `0` (random) | opencode server port |
-| `LLM_MODEL` | same as VLM_MODEL | OpenCode text model for fusion, queries, and crosschecks |
-| `LLM_VARIANT` | `high` | Text-model reasoning variant (low/medium/high) — highest effort for LLM work |
+| `LLM_MODEL` | `agnes/agnes-2.0-flash` | Text model for ALL pure-text work (fusion, queries, summaries, claim extraction, read/web agents). Independent of the vision model |
+| `LLM_VARIANT` | `none` (disabled) | Text-model reasoning variant. agnes exposes no thinking arg; set to low/medium/high only if you point `LLM_MODEL` at a thinking-capable model |
 
 `/crosscheck` starts the project-local `web-crosscheck` OpenCode agent. It is
 restricted to `websearch` and `webfetch`; the server enables Exa web search via
@@ -103,14 +103,21 @@ tool calling.
 | `RETRY_MAX_DELAY_S` | `30.0` | Max retry delay (seconds) |
 | `RETRY_JITTER_FACTOR` | `0.25` | Jitter factor for retries |
 
-### Database & Embedding
+### Storage & Fusion
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `DB_DIR` | `./video_db` | Database storage directory |
-| `CHROMA_COLLECTION` | `segments` | ChromaDB collection name |
-| `EMBEDDING_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | Embedding model |
+| `DB_DIR` | `./video_db` | Project storage directory (holds `timeline.json` + `context.md` per video) |
 | `FUSION_SEGMENT_SIZE` | `5` | Segments per fusion batch |
+
+### Agent-Driven Querying
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `QA_AGENT` | `video-qa` | Read-only OpenCode agent used to search long videos |
+| `QA_CONTEXT_TOKEN_FRACTION` | `0.10` | Feed the whole video inline when its estimated tokens are below this fraction of the text model's context window; otherwise let the agent grep/read |
+| `QA_CONTEXT_LIMIT_FALLBACK` | `128000` | Context window assumed when neither `MODEL_CONTEXT_LIMITS` (agnes is pinned to 512k there) nor the opencode server reports one |
+| `QA_IDLE_TIMEOUT_S` | `300` | Abort a `video-qa` session after this many seconds with no activity |
 
 ### Download & FFmpeg
 
@@ -143,6 +150,24 @@ python cli.py dQw4w9WgXcQ  # YouTube ID
 # Direct pipeline
 python pipeline.py video.mp4 --force  # Force reprocessing
 ```
+
+### Batch Processing
+
+```bash
+# Process multiple videos sequentially and generate reports
+python process_queue.py BV1iatTeGENk dQw4w9WgXcQ https://...
+
+# From a queue file (one source per line; blank lines and #-comments ignored)
+python process_queue.py --file queue.txt
+
+# Custom output directory and crosscheck depth
+python process_queue.py BV1... --out-dir reports --crosscheck-n 3
+
+# Override model settings
+python process_queue.py BV1... --text-model opencode/mimo-v2.5-free
+```
+
+Each video runs the full pipeline, then generates a markdown report with summary and web fact-checking results. Failed items are skipped and summarized at the end.
 
 ### Query a Processed Video
 
@@ -198,8 +223,8 @@ frame_analyses.json  (OCR + VLM per frame)
 fused_segments.json  (speech + visual merged)
     │
     ▼ [Phase 4: Database]
-chroma/  (vector store)
 timeline.json  (structured timeline)
+context.md     (grep-friendly whole-video context for querying)
 ```
 
 ## Timeout Configuration
@@ -211,6 +236,7 @@ Timeouts configurable in `config.py` (see Configuration section above).
 video_summarize/
 ├── cli.py                    # Interactive workspace CLI
 ├── pipeline.py               # Main processing pipeline
+├── process_queue.py           # Batch queue runner with summary + crosscheck reports
 ├── query.py                  # Standalone query interface
 ├── config.py                 # Configuration (all tunable parameters)
 ├── downloader.py             # Video download (yt-dlp)
@@ -219,7 +245,7 @@ video_summarize/
 │   ├── lang.py               # Language detection
 │   ├── stt.py                # Speech-to-text (FunASR)
 │   ├── fusion.py             # Speech-visual fusion
-│   ├── database.py           # ChromaDB + timeline
+│   ├── database.py           # timeline.json + context.md writer/reader
 │   └── vision/
 │       ├── __init__.py       # Vision module init
 │       ├── frame_sampler.py  # Adaptive frame extraction
@@ -227,7 +253,7 @@ video_summarize/
 │       └── opencode_vlm.py   # opencode serve subprocess + HTTP client
 ├── query/
 │   ├── __init__.py           # Query module init
-│   ├── query_engine.py       # RAG query engine
+│   ├── query_engine.py       # agent-driven query engine (inline / video-qa search)
 │   └── crosscheck.py         # Web fact-checking pipeline
 ├── utils/
 │   ├── __init__.py           # Utils module init

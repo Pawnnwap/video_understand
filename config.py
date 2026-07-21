@@ -67,18 +67,25 @@ def normalize_variant(value: str | None) -> str:
     return "" if v.lower() in _VARIANT_DISABLED else v
 
 
-# OpenCode vision model. Frame analysis needs no deep reasoning, so thinking
-# stays at the lowest effort the model exposes ("low" — opencode has no
-# fully-off variant).
+# OpenCode vision model — the ONLY job that needs vision (Phase-2b frame
+# analysis). agnes-2.0-flash DOES support images at its raw API, but opencode's
+# provider integration for it drops the image (the model then sees text only and
+# says it "does not support image input"). Since the whole pipeline routes vision
+# through opencode, keep VLM on mimo. Frame analysis needs no deep reasoning, so
+# thinking stays at the lowest effort the model exposes ("low").
 VLM_MODEL = os.environ.get("VLM_MODEL", "opencode/mimo-v2.5-free")
 VLM_VARIANT = normalize_variant(os.environ.get("VLM_VARIANT", "")) or "low"
 OPENCODE_SERVER_PORT = int(os.environ.get("OPENCODE_SERVER_PORT", "0") or 0)
 
-# OpenCode text model used for fusion, queries, and web crosschecking.
-# Text-LLM work defaults to the highest reasoning effort the opencode free
-# models expose ("high"). Env vars / CLI flags override both variants.
-LLM_MODEL = os.environ.get("LLM_MODEL", VLM_MODEL)
-LLM_VARIANT = normalize_variant(os.environ.get("LLM_VARIANT", "")) or "high"
+# OpenCode text model used for EVERY pure-text task: fusion, queries, summaries,
+# claim extraction, and the read/web agents. The vision and text paths are fully
+# separate (call() vs call_text*() in opencode_vlm), so the text model is chosen
+# independently. Defaults to agnes-2.0-flash — verified to handle text and
+# tool-calling well. agnes exposes no reasoning/thinking arg, so its variant is
+# disabled by default; override LLM_VARIANT if you point LLM_MODEL at a
+# thinking-capable model.
+LLM_MODEL = os.environ.get("LLM_MODEL", "agnes/agnes-2.0-flash")
+LLM_VARIANT = normalize_variant(os.environ.get("LLM_VARIANT", "none"))
 
 
 # FunASR model paths. Local model directories take precedence over model IDs.
@@ -169,17 +176,43 @@ FUSION_SEGMENT_SIZE = 5
 # — matched to the VLM cap since they share the same opencode backend.
 FUSION_MAX_PARALLEL = int(os.environ.get("FUSION_MAX_PARALLEL", "4"))
 
+# Read-only agent that searches a long video's context files to decide which
+# claims are worth fact-checking (short videos are extracted inline instead).
+CLAIM_AGENT = os.environ.get("CLAIM_AGENT", "claim-extractor")
 # Crosscheck agent idle timeout: a claim session is aborted only after this
 # many seconds with NO activity. Every observed event resets its timer.
 CROSSCHECK_IDLE_TIMEOUT_S = int(os.environ.get("CROSSCHECK_IDLE_TIMEOUT_S", "300"))
 # Claims are researched in parallel agent sessions, capped at this many.
 CROSSCHECK_MAX_PARALLEL = int(os.environ.get("CROSSCHECK_MAX_PARALLEL", "4"))
+# Times to retry a claim in a fresh session after an idle-timeout or error
+# before falling back to an UNVERIFIED placeholder. The free models sometimes
+# stall mid-research; a retry recovers the transient case.
+CROSSCHECK_CLAIM_RETRIES = int(os.environ.get("CROSSCHECK_CLAIM_RETRIES", "1"))
+# Loop guard for every monitored agent/LLM call: an identical failed tool call
+# repeated MORE than this many times force-stops the session (the agent is
+# thrashing). Independent of the idle timer.
+AGENT_LOOP_TOLERANCE = int(os.environ.get("AGENT_LOOP_TOLERANCE", "3"))
 
 DOWNLOAD_MAX_DURATION_SEC = 0
 
 DB_DIR = str((REPO_ROOT / "video_db").resolve())
-CHROMA_COLLECTION = "segments"
-EMBEDDING_MODEL = os.environ.get(
-    "EMBEDDING_MODEL",
-    str(MODEL_ROOT / "sentence-transformers" / "paraphrase-multilingual-MiniLM-L12-v2"),
-)
+
+# ── Agent-driven querying (replaces the former ChromaDB/embedding RAG) ────────
+# The video-qa agent gets the whole context when it is short, and read/grep
+# tools over the project's context files when it is long. "Short" means the
+# estimated context tokens are below this fraction of the text model's context
+# window (queried live from the opencode server, so it tracks the model).
+QA_AGENT = os.environ.get("QA_AGENT", "video-qa")
+QA_CONTEXT_TOKEN_FRACTION = float(os.environ.get("QA_CONTEXT_TOKEN_FRACTION", "0.10"))
+# Used only when neither MODEL_CONTEXT_LIMITS nor the opencode server reports a
+# context limit for the model.
+QA_CONTEXT_LIMIT_FALLBACK = int(os.environ.get("QA_CONTEXT_LIMIT_FALLBACK", "128000"))
+# Known context windows (tokens) for models whose opencode catalogue reports none
+# (agnes reports limit 0). Keyed "provider/model"; takes precedence over the
+# server catalogue and the fallback.
+MODEL_CONTEXT_LIMITS = {
+    "agnes/agnes-2.0-flash": 512_000,
+}
+# A video-qa agent session is aborted only after this many seconds with NO
+# activity; every observed tool call or streamed token resets the timer.
+QA_IDLE_TIMEOUT_S = int(os.environ.get("QA_IDLE_TIMEOUT_S", "300"))

@@ -20,6 +20,9 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from core.vision.opencode_vlm import AgentTimeout
+from query.query_engine import _AgentProgress
+
 log = logging.getLogger(__name__)
 
 
@@ -117,12 +120,34 @@ Extraction rules:
 - Prefer claims with concrete nouns, numbers, named people/institutions, dates,
   markets, social groups, or causal relationships.
 - It is OK if the video presents a claim as the speaker's view or as another
-  person's view; phrase it as "the video says/cites ..." when needed.
+  person's view; attribute it explicitly (e.g. "According to <named source>, ...")
+  rather than a bare "the video says".
 - Do not reject claims merely because the transcript is informal or lacks a
   polished summary.
 - Output an empty claims array ONLY if the timeline is purely greeting/filler
   and contains no checkable factual assertion.
 - Do not invent facts not present in the timeline.
+
+Self-containment (critical): the "claim" field is read in isolation by a
+researcher who has NOT seen the video and sees nothing else — not this timeline,
+not the "evidence" field, not the other claims. Each claim must stand completely
+on its own:
+- Resolve every pronoun and deictic reference ("he", "they", "this study", "that
+  company", "the report", "here", "last year") into the explicit named entity or
+  absolute value it refers to, using the timeline to identify it.
+- State the subject, the asserted relation, the attributed source/institution,
+  and every number, date, time period, and place needed to check it — all inside
+  the claim text itself.
+- Never depend on the evidence field, an earlier claim, or the video to supply a
+  missing referent. Do not write "the aforementioned", "as mentioned", etc.
+- If the timeline never names an entity required to make the claim checkable,
+  include the most specific identifying description it does give, or drop the
+  claim rather than leave a dangling reference.
+- Bad (not self-contained): "He said their profits doubled last year."
+  Good (self-contained): "Nvidia CEO Jensen Huang said Nvidia's data-center
+  revenue more than doubled year-over-year in 2024."
+Put the video-side basis (timestamp, quote or paraphrase) in "evidence"; keep
+"claim" a single self-contained, web-checkable sentence.
 
 Output exactly one JSON object and no prose/code fences:
 {{"claims": [{{"claim": "...", "evidence": "..."}}]}}
@@ -140,10 +165,24 @@ _EXTRACT_PROMPT_ZH = """\
 
 抽取规则：
 - 优先抽取包含具体名词、数字、具名人物/机构、时间、市场、社会群体或因果关系的声明。
-- 如果视频是在引用他人观点，也可以抽取；必要时写成“视频称/引用……”。
+- 如果视频是在引用他人观点，也可以抽取；请明确写出来源（如“据<具名来源>，……”），不要只写“视频称”。
 - 不要因为转写口语化、摘要为空或表达不够正式，就判定没有声明。
 - 只有当时间线几乎全是问候/闲聊且没有任何可核查事实断言时，才输出空 claims 数组。
 - 不要编造时间线中没有的信息。
+
+自足性（关键）：claim 字段会被一个没有看过视频、也看不到其他任何内容（看不到本时间线、
+看不到 evidence、看不到其他 claim）的研究者单独阅读。因此每条 claim 必须完全独立成立：
+- 把所有代词与指示性表述（“他”“他们”“这项研究”“那家公司”“该报告”“这里”“去年”）都替换为
+  其所指的具体具名实体或绝对数值，借助时间线来确定其身份。
+- 在 claim 文本内部写清主体、断言关系、归属的来源/机构，以及核查所需的全部数字、
+  日期、时间段与地点。
+- 不得依赖 evidence 字段、上一条 claim 或视频来补全缺失的指代。不要写“上述”“前面提到”等。
+- 如果时间线始终没有点明核查所需的某个实体，就使用它给出的最具体的可识别描述，
+  否则宁可舍弃该条，也不要留下悬空指代。
+- 反例（不自足）：“他说他们去年利润翻倍了。”
+  正例（自足）：“英伟达 CEO 黄仁勋称，英伟达数据中心业务营收在 2024 年同比增长超过一倍。”
+请把视频侧依据（时间戳、原话或概括）放在 evidence 中，而 claim 保持为一句自足、
+可用网络核查的陈述。
 
 只输出一个 JSON 对象，不要输出其他文字或代码块：
 {{"claims": [{{"claim": "...", "evidence": "..."}}]}}
@@ -161,7 +200,12 @@ Rules:
 - Output exactly one JSON object and nothing else.
 - Shape: {{"claims": [{{"claim": "...", "evidence": "..."}}]}}
 - JSON string safety is mandatory: inside claim/evidence values, do not use ASCII double quote characters. Use Chinese corner quotes 「...」 or paraphrase quoted phrases.
-- claim must be a concrete factual assertion suitable for web research.
+- claim must be a concrete factual assertion suitable for web research, and fully
+  self-contained: resolve every pronoun/deictic reference ("he", "this study",
+  "that company", "last year") to the explicit named entity or absolute value
+  using Input A, and include the source, numbers, dates, and places needed to
+  check it. A researcher seeing ONLY the claim — not the timeline, not evidence —
+  must understand it. Never leave dangling references like "the aforementioned".
 - evidence must quote or summarize the video basis with timestamp context when possible.
 - Do not include opinions without checkable factual content.
 - Do not invent facts not present in the timeline.
@@ -190,7 +234,10 @@ JSON、普通文字、Markdown 或不完整输出。请恢复最多 {n} 个在�
 - JSON 字符串安全是硬性要求：claim/evidence 的内容里不要使用英文半角双引号。如需引用原话，使用中文引号「...」或改写转述。
 - 只有 JSON 的键名和字符串边界可以使用英文半角双引号。
 - 结构必须是：{{"claims": [{{"claim": "...", "evidence": "..."}}]}}
-- claim 必须是适合网络检索的具体事实断言。
+- claim 必须是适合网络检索的具体事实断言，且完全自足：借助输入 A 把所有代词/指示性表述
+  （“他”“这项研究”“那家公司”“去年”）替换为具体具名实体或绝对数值，并写入核查所需的
+  来源、数字、日期与地点。只看到 claim（看不到时间线、看不到 evidence）的研究者也必须能理解。
+  不要留下“上述”之类的悬空指代。
 - evidence 必须引用或概括视频中的依据，尽量带时间线语境。
 - 不要包含缺乏可核查事实内容的纯观点。
 - 不要编造时间线中没有的信息。
@@ -205,6 +252,25 @@ JSON、普通文字、Markdown 或不完整输出。请恢复最多 {n} 个在�
 ---
 {raw}
 ---
+"""
+
+
+# Per-call task for the read-only ``claim-extractor`` agent. The durable method
+# (what counts as a claim, self-containment, strict-JSON output, untrusted-data
+# handling) lives in the agent's system prompt in ``.opencode/opencode.json``;
+# this only supplies the count, language, and where the video's files are.
+_EXTRACT_AGENT_PROMPT = """\
+Extract the {n} most important self-contained, fact-checkable claims from this
+video. Write each claim and its evidence in {language}.
+
+Video context file (Markdown, one block per timestamped segment):
+  {context_path}
+Project directory (timeline.json, etc.):
+  {project_dir}
+
+Search the files yourself with grep/read and cover the WHOLE video, not just the
+start, before you decide what is worth checking. Output only the JSON object:
+{{"claims": [{{"claim": "...", "evidence": "..."}}]}}
 """
 
 
@@ -320,13 +386,47 @@ def _segment_claim_text(segment: dict) -> str:
     return "\n".join(part for part in parts if part)
 
 
+def _claim_pairs(claims, n: int) -> list[dict]:
+    """Normalize validated claim dicts into ``{claim, evidence}`` pairs."""
+    return [
+        {
+            "claim": str(pair.get("claim", "")).strip(),
+            "evidence": str(pair.get("evidence", "")).strip(),
+        }
+        for pair in (claims or [])
+        if isinstance(pair, dict) and pair.get("claim")
+    ][:n]
+
+
 def _extract_claim_pairs(engine, n: int, lang: str) -> list[dict]:
+    """Select the top *n* checkable claims from the video.
+
+    Short videos are extracted in one shot from the whole context. Long videos
+    are handed to the read-only ``claim-extractor`` agent, which greps/reads the
+    context files itself to decide what is worth checking — the way ``video-qa``
+    answers questions. If the agent yields nothing, fall back to a one-shot pass
+    over an evenly sampled timeline so extraction never regresses.
+    """
+    context = engine.db.context_text()
+    fits_inline = getattr(engine, "_fits_inline", None)
+    if context.strip() and fits_inline and fits_inline(context):
+        return _extract_inline(engine, n, lang, context)
+
+    pairs = _extract_agentic(engine, n, lang)
+    if pairs:
+        return pairs
+
+    log.warning("crosscheck: agentic extraction empty; falling back to sampled one-shot")
     segments = _sample_segments(engine.db.get_all_segments())
     timeline = "\n\n".join(
-        f"[{segment.get('start_ts', '??:??')}] "
-        f"{_segment_claim_text(segment)}"
+        f"[{segment.get('start_ts', '??:??')}] {_segment_claim_text(segment)}"
         for segment in segments
     )
+    return _extract_inline(engine, n, lang, timeline)
+
+
+def _extract_inline(engine, n: int, lang: str, timeline: str) -> list[dict]:
+    """One-shot claim extraction over a pasted timeline (with a formatter loop)."""
     template = _EXTRACT_PROMPT_ZH if lang == "zh" else _EXTRACT_PROMPT_EN
     formatter = _FORMATTER_PROMPT_ZH if lang == "zh" else _FORMATTER_PROMPT_EN
 
@@ -357,17 +457,49 @@ def _extract_claim_pairs(engine, n: int, lang: str) -> list[dict]:
         if claims:
             break
 
-    if not claims:
+    return _claim_pairs(claims, n)
+
+
+def _extract_agentic(engine, n: int, lang: str) -> list[dict]:
+    """Let the claim-extractor agent search the video's files and pick claims."""
+    call_monitored = getattr(engine.llm, "call_text_monitored", None)
+    call_text = getattr(engine.llm, "call_text", None)
+    if not (call_monitored or call_text):
         return []
 
-    return [
-        {
-            "claim": str(pair.get("claim", "")).strip(),
-            "evidence": str(pair.get("evidence", "")).strip(),
-        }
-        for pair in claims
-        if isinstance(pair, dict) and pair.get("claim")
-    ][:n]
+    agent = getattr(engine.cfg, "CLAIM_AGENT", "claim-extractor")
+    variant = getattr(engine.cfg, "LLM_VARIANT", None)
+    idle = int(getattr(engine.cfg, "QA_IDLE_TIMEOUT_S", 300))
+    language = "Chinese" if lang == "zh" else "English"
+    prompt = _EXTRACT_AGENT_PROMPT.format(
+        n=n,
+        language=language,
+        context_path=engine.db.context_path(),
+        project_dir=engine.db.db_dir,
+    )
+    print("        (long video — agent is searching the transcript for claims...)")
+
+    for attempt in range(3):
+        progress = _AgentProgress("claim-extractor") if call_monitored else None
+        try:
+            if call_monitored:
+                raw = call_monitored(
+                    prompt, variant=variant, agent=agent,
+                    on_progress=progress, idle_timeout_s=idle,
+                )
+            else:
+                raw = call_text(prompt, variant=variant, agent=agent)
+        except Exception as exc:
+            log.warning("crosscheck: agentic extraction attempt %d failed: %s", attempt + 1, exc)
+            continue
+        finally:
+            if progress:
+                progress.done()
+        pairs = _claim_pairs(_parse_claim_json(raw), n)
+        if pairs:
+            return pairs
+        log.warning("crosscheck: agentic extraction attempt %d produced no valid claims", attempt + 1)
+    return []
 
 
 def _claim_prompt(
@@ -466,6 +598,54 @@ per-claim details.
 {body}
 """
 
+_SALVAGE_PROMPT = """\
+A web fact-check of ONE video claim was force-stopped before the agent finished
+({reason}). Below are its partial, unstructured research notes — they may include
+reasoning and fetched-page text and are likely incomplete. Using ONLY what these
+notes actually establish, write a best-effort verdict in {language}. Do not
+invent sources or findings absent from the notes; if the notes are too thin to
+judge, use UNVERIFIED / LOW.
+
+Output exactly this structure and nothing else:
+## Claim {index}
+**Claim:** {claim}
+**Verdict:** SUPPORTED | PARTIALLY SUPPORTED | UNVERIFIED | CONTRADICTED
+**Confidence:** HIGH | MEDIUM | LOW
+**Analysis:** 1-2 neutral sentences grounded in the notes; note the research was cut short.
+**Sources checked:** URLs/domains found in the notes, or "(interrupted before sources were confirmed)".
+
+Partial research notes:
+---
+{partial}
+---
+"""
+
+
+def _salvage_section(engine, index: int, pair: dict, partial: str, reason: str, lang: str) -> str:
+    """Best-effort verdict synthesized from a force-stopped agent's partial notes.
+
+    Turns a claim that hit the idle/loop guard into a usable (if low-confidence)
+    section instead of discarding the pages the agent had already fetched.
+    """
+    language = "Chinese" if lang == "zh" else "English"
+    out = engine._llm(
+        _SALVAGE_PROMPT.format(
+            index=index,
+            claim=pair["claim"],
+            partial=partial[:4000],
+            reason=reason,
+            language=language,
+        ),
+        max_tokens=500,
+    )
+    if out.strip().startswith("## Claim"):
+        return out
+    return (
+        f"## Claim {index}\n**Claim:** {pair['claim']}\n"
+        f"**Verdict:** UNVERIFIED\n**Confidence:** LOW\n"
+        f"**Analysis:** {reason} Partial notes were captured but could not be synthesized."
+    )
+
 
 class _MultiProgress:
     """One shared progress line aggregating N concurrent claim sessions."""
@@ -558,46 +738,65 @@ def _run_web_crosscheck_agent(
 
     Sessions start together, capped at CROSSCHECK_MAX_PARALLEL. Each session
     has its own polled progress (any event resets that claim's idle timeout);
-    one aggregated line shows overall state. A claim that times out or errors
-    yields a placeholder section without sinking the other claims. The
+    one aggregated line shows overall state. A claim that times out or errors is
+    retried in a fresh session (CROSSCHECK_CLAIM_RETRIES) before yielding a
+    placeholder section, so a transient stall never sinks the claim. The
     "Overall Reliability" paragraph is synthesized afterwards from the
     per-claim sections with a plain (non-web) LLM call.
     """
     variant = getattr(engine.cfg, "LLM_VARIANT", None)
     idle_timeout_s = getattr(engine.cfg, "CROSSCHECK_IDLE_TIMEOUT_S", 300)
     max_parallel = int(getattr(engine.cfg, "CROSSCHECK_MAX_PARALLEL", 4))
+    retries = max(0, int(getattr(engine.cfg, "CROSSCHECK_CLAIM_RETRIES", 1)))
+    loop_tolerance = int(getattr(engine.cfg, "AGENT_LOOP_TOLERANCE", 3))
     monitored = hasattr(engine.llm, "call_text_monitored")
     progress = _MultiProgress(len(pairs)) if monitored else None
 
     def _research_one(item: tuple[int, dict]) -> tuple[int, str]:
         index, pair = item
         prompt = _claim_prompt(index, pair, lang, reachable, bot_limited, blocked)
+        # The free models occasionally stall or thrash mid-research (a fetch
+        # errors and the model then loops or produces nothing until a guard
+        # fires), discarding real work already done. First retry in a fresh
+        # session; if that also fails, salvage a best-effort verdict from the
+        # agent's partial notes before falling back to an UNVERIFIED placeholder.
+        reason = "Research produced no result."
+        partial = ""
         try:
-            if monitored:
-                return index, engine.llm.call_text_monitored(
-                    prompt,
-                    variant=variant,
-                    agent=_WEB_CROSSCHECK_AGENT,
-                    on_progress=progress.callback(index),
-                    idle_timeout_s=idle_timeout_s,
-                )
-            return index, engine.llm.call_text(
-                prompt, variant=variant, agent=_WEB_CROSSCHECK_AGENT
-            )
-        except TimeoutError:
-            log.error("crosscheck: claim %d idle-timeout", index)
+            for attempt in range(retries + 1):
+                try:
+                    if monitored:
+                        return index, engine.llm.call_text_monitored(
+                            prompt,
+                            variant=variant,
+                            agent=_WEB_CROSSCHECK_AGENT,
+                            on_progress=progress.callback(index),
+                            idle_timeout_s=idle_timeout_s,
+                            loop_tolerance=loop_tolerance,
+                        )
+                    return index, engine.llm.call_text(
+                        prompt, variant=variant, agent=_WEB_CROSSCHECK_AGENT
+                    )
+                except AgentTimeout as exc:
+                    reason = f"Research {exc.reason}-stopped: {exc}."
+                    if exc.partial_text:
+                        partial = exc.partial_text
+                    log.error(
+                        "crosscheck: claim %d %s-stop (attempt %d/%d)",
+                        index, exc.reason, attempt + 1, retries + 1,
+                    )
+                except Exception as exc:
+                    reason = f"Research failed: {exc}"
+                    log.exception(
+                        "crosscheck: claim %d failed (attempt %d/%d)",
+                        index, attempt + 1, retries + 1,
+                    )
+            if partial.strip():
+                return index, _salvage_section(engine, index, pair, partial, reason, lang)
             return index, (
                 f"## Claim {index}\n**Claim:** {pair['claim']}\n"
                 f"**Verdict:** UNVERIFIED\n**Confidence:** LOW\n"
-                f"**Analysis:** Research aborted after {idle_timeout_s:.0f}s "
-                "without agent activity."
-            )
-        except Exception as exc:
-            log.exception("crosscheck: claim %d failed", index)
-            return index, (
-                f"## Claim {index}\n**Claim:** {pair['claim']}\n"
-                f"**Verdict:** UNVERIFIED\n**Confidence:** LOW\n"
-                f"**Analysis:** Research failed: {exc}"
+                f"**Analysis:** {reason}"
             )
         finally:
             if progress:

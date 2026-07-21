@@ -96,6 +96,12 @@ _CONNECTIVITY_SITES = [
     "https://baike.baidu.com",
     "https://www.toutiao.com",
     "https://www.zhihu.com",
+    # academic / papers (HTML + abstract endpoints; PDFs are not webfetch-readable)
+    "https://arxiv.org",
+    "https://pubmed.ncbi.nlm.nih.gov",
+    "https://pmc.ncbi.nlm.nih.gov",
+    "https://europepmc.org",
+    "https://www.frontiersin.org",
 ]
 
 _PROBE_TIMEOUT_S = 8.0
@@ -738,9 +744,10 @@ def _run_web_crosscheck_agent(
 
     Sessions start together, capped at CROSSCHECK_MAX_PARALLEL. Each session
     has its own polled progress (any event resets that claim's idle timeout);
-    one aggregated line shows overall state. A claim that times out or errors is
-    retried in a fresh session (CROSSCHECK_CLAIM_RETRIES) before yielding a
-    placeholder section, so a transient stall never sinks the claim. The
+    one aggregated line shows overall state. A claim that times out, errors, or
+    returns an empty response is retried in a fresh session
+    (CROSSCHECK_CLAIM_RETRIES) before yielding a placeholder section, so a
+    transient stall never sinks the claim or leaves a blank gap. The
     "Overall Reliability" paragraph is synthesized afterwards from the
     per-claim sections with a plain (non-web) LLM call.
     """
@@ -766,7 +773,7 @@ def _run_web_crosscheck_agent(
             for attempt in range(retries + 1):
                 try:
                     if monitored:
-                        return index, engine.llm.call_text_monitored(
+                        result = engine.llm.call_text_monitored(
                             prompt,
                             variant=variant,
                             agent=_WEB_CROSSCHECK_AGENT,
@@ -774,8 +781,19 @@ def _run_web_crosscheck_agent(
                             idle_timeout_s=idle_timeout_s,
                             loop_tolerance=loop_tolerance,
                         )
-                    return index, engine.llm.call_text(
-                        prompt, variant=variant, agent=_WEB_CROSSCHECK_AGENT
+                    else:
+                        result = engine.llm.call_text(
+                            prompt, variant=variant, agent=_WEB_CROSSCHECK_AGENT
+                        )
+                    # A textless response (agent ran out of steps mid-research, or
+                    # emitted only reasoning) must not become a blank section —
+                    # treat it as a failed attempt so retry/placeholder kicks in.
+                    if result and result.strip():
+                        return index, result
+                    reason = "Research returned an empty response."
+                    log.error(
+                        "crosscheck: claim %d empty response (attempt %d/%d)",
+                        index, attempt + 1, retries + 1,
                     )
                 except AgentTimeout as exc:
                     reason = f"Research {exc.reason}-stopped: {exc}."
